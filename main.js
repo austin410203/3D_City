@@ -1,136 +1,30 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { ERAS, MAPS, CHRONICLE, VALS } from './data.js';
 
-// ───────────────────────── 常數與資料 ─────────────────────────
-const N = 16;            // 網格大小
-const T = 30;            // 每格寬度（Blender tile 為 30m）
-const DAY_SEC = 1.6;     // 1x 速度下一天的秒數
-const SAVE_KEY = 'tinytown-save-v2-';
+// ═════════════════════════ 常數 ═════════════════════════
+const N = 16, T = 30;
+const YEAR_SEC = 2.2;            // 1× 速度下每「回合」秒數
+const SAVE_KEY = 'civ-observer-v1-';
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N E S W（-Z 為北）
 const BIT = [1, 2, 4, 8];
-
-// 道路 tile 在模型中的連接方向（N=1 E=2 S=4 W=8）
-const ROAD_PIECES = [
-  ['tile-road-intersection', 15],
-  ['tile-road-intersection-t', 2 | 4 | 8],
-  ['tile-road-straight', 1 | 4],
-  ['tile-road-curve', 4 | 2],
-  ['tile-road-end', 4],
-];
-
-const ZONE = {
-  res: { levels: ['building-house-family-small', 'building-house-middle', 'building-house-big', 'building-house-modern', 'building-house-family-large'], val: [4, 10, 18, 30, 48] },
-  com: { levels: ['building-shop-china', 'building-cafe', 'building-restaurant', 'building-mall', 'building-office', 'building-office-tall'], val: [4, 8, 14, 24, 40, 64] },
-  ind: { levels: ['industry-building', 'industry-warehouse', 'industry-factory'], val: [10, 20, 36] },
-};
-
-const TOOLS = [
-  { id: 'select', ic: '👆', nm: '選取', cost: 0 },
-  { id: 'road', ic: '🛣️', nm: '道路', cost: 10 },
-  { id: 'res', ic: '🏠', nm: '住宅', cost: 100 },
-  { id: 'com', ic: '🏪', nm: '商業', cost: 150 },
-  { id: 'ind', ic: '🏭', nm: '工業', cost: 200 },
-  { sep: true },
-  { id: 'power', ic: '🌬️', nm: '風車', cost: 300, power: 40, upkeep: 2, model: 'windmill' },
-  { id: 'solar', ic: '☀️', nm: '太陽能', cost: 700, power: 110, upkeep: 3, unlock: 200 },
-  { id: 'park', ic: '🌳', nm: '公園', cost: 80, upkeep: 0.5 },
-  { id: 'police', ic: '🚓', nm: '警察局', cost: 450, upkeep: 4, radius: 4, model: 'building-policestation', unlock: 40, power: -4 },
-  { id: 'fire', ic: '🚒', nm: '消防局', cost: 450, upkeep: 4, radius: 4, model: 'building-firestation', unlock: 40, power: -4 },
-  { id: 'school', ic: '🏫', nm: '學校', cost: 700, upkeep: 6, radius: 5, model: 'building-school', unlock: 120, power: -6 },
-  { id: 'hospital', ic: '🏥', nm: '醫院', cost: 900, upkeep: 8, radius: 5, model: 'building-hospital', unlock: 250, power: -8 },
-  { sep: true },
-  { id: 'bulldoze', ic: '🚜', nm: '拆除', cost: 5 },
-];
-const TOOL = Object.fromEntries(TOOLS.filter(t => t.id).map(t => [t.id, t]));
-const NAMES = { road: '道路', res: '住宅區', com: '商業區', ind: '工業區', power: '風力發電', solar: '太陽能電廠', park: '公園', police: '警察局', fire: '消防局', school: '學校', hospital: '醫院', water: '水域', mountain: '山脈', hill: '丘陵', landmark: '金字塔遺跡' };
-const GOALS = [40, 120, 250, 500, 1000, 2000];
-
-// ───────────────────────── 地圖關卡 ─────────────────────────
+const ROAD_PIECES = [['tile-road-intersection', 15], ['tile-road-intersection-t', 14], ['tile-road-straight', 5], ['tile-road-curve', 6], ['tile-road-end', 4]];
 const TERRAIN = new Set(['water', 'mountain', 'hill', 'landmark']);
-const dist = (i, j, x, y) => Math.hypot(i - x, j - y);
-const MAPS = [
-  {
-    id: 'grass', ic: '🌾', nm: '綠野平原', diff: '★☆☆', money: 5000,
-    desc: '一望無際的草原與農場。地形平坦、空間充足，最適合新手。',
-    rules: ['🐄 田園風光：附近有樹林的住宅滿意度更高'],
-    sky: '#9fd3f0', sea: '#4fa7c9',
-    terrain: () => null,
-    features: [],
-    decor: { rate: 0.3, sets: [['tree-round', 'tree-lime', 'tree-oak', 'tree-simple', 'tree-lime_red', 'shrub-round', 'shrub-flowers'], ['cow', 'cow', 'horse', 'haystack', 'hay-pile', 'grass-tall'], ['sunflower', 'sunflower', 'sunflower', 'scarecrow', 'grass-tall']], weights: [0.65, 0.2, 0.15] },
-    roads: [[2, 8, 13, 8, 'h'], [7, 5, 7, 11, 'v']],
-    windmill: [5, 7],
-    mod: { treeBonus: 3 },
-  },
-  {
-    id: 'coast', ic: '🌊', nm: '蔚藍海灣', diff: '★★☆', money: 5000,
-    desc: '依海而建的港灣小鎮，海岸線切割出不規則的土地，帆船在海上航行。',
-    rules: ['🏖️ 海景：距海 2 格內的建築滿意度 +14', '🌬️ 海風強勁：風車發電 +25%'],
-    sky: '#8fd0f2', sea: '#3f9fd0',
-    terrain(i, j) { const k = i * 0.75 + j + Math.sin(i * 0.9) * 1.3; return k > 18.5 ? 'water' : null; },
-    features: [{ model: 'lighthouse', cells: [[12, 7]], scale: 1.6 }],
-    decor: { rate: 0.28, sets: [['palm', 'palm-big', 'palm-round', 'palm-angle', 'palm-small'], ['tree-round', 'tree-lime', 'shrub-round', 'shrub-flowers']], weights: [0.5, 0.5] },
-    roads: [[1, 5, 11, 5, 'h'], [5, 2, 5, 11, 'v']],
-    windmill: [3, 4],
-    boats: 5,
-    mod: { water: { r: 2, v: 14 }, windMul: 1.25 },
-  },
-  {
-    id: 'mountain', ic: '⛰️', nm: '群山峽谷', diff: '★★☆', money: 5500,
-    desc: '高山環繞的峽谷，可用土地被山脈與丘陵切割，森林茂密、野生動物出沒。',
-    rules: ['🏔️ 山景：距山 2 格內滿意度 +8', '🌬️ 山谷風口：風車發電 +50%', '🚧 地形破碎，規劃道路要更用心'],
-    sky: '#a9d6ea', sea: '#4b8fb0',
-    terrain(i, j) { const hills = ['3,3', '11,4', '4,10', '9,11', '13,9', '2,6', '10,2']; return hills.includes(i + ',' + j) ? 'hill' : null; },
-    features: [
-      { model: 'terrain-mountains', cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
-      { model: 'terrain-mountains', cells: [[14, 0], [15, 0], [14, 1], [15, 1]], rot: Math.PI / 2 },
-      { model: 'mountains', cells: [[5, 14], [6, 14], [7, 14], [5, 15], [6, 15], [7, 15]], rot: Math.PI },
-      { model: 'terrain-mountains', cells: [[13, 13], [14, 13], [13, 14], [14, 14]], rot: Math.PI },
-      { model: 'terrain-mountains', cells: [[0, 13], [1, 13], [0, 14], [1, 14]], rot: -Math.PI / 2 },
-      { model: 'mountains', cells: [[6, 0], [7, 0], [8, 0], [6, 1], [7, 1], [8, 1]] },
-    ],
-    decor: { rate: 0.45, sets: [['tree-fir', 'tree-conifer', 'tree-spruce', 'tree-forest', 'tree-birch'], ['deer', 'bear', 'wolf', 'rock-sharp', 'stone-round']], weights: [0.85, 0.15] },
-    roads: [[0, 7, 15, 7, 'h'], [8, 3, 8, 12, 'v']],
-    windmill: [6, 6],
-    mod: { mountain: { r: 2, v: 8 }, windMul: 1.5 },
-  },
-  {
-    id: 'desert', ic: '🏜️', nm: '黃沙荒漠', diff: '★★★', money: 6500,
-    desc: '炎熱乾燥的沙漠，只有仙人掌與風滾草。金字塔遺跡帶來觀光客。',
-    rules: ['🥵 缺水酷熱：所有建築滿意度 -12，公園 3 格內可抵消', '☀️ 日照充足：太陽能發電 +60%，且一開始就能建造', '🔺 金字塔觀光：附近滿意度 +10'],
-    sky: '#f3d9a4', sea: '#c9a66b', sand: '#dcb978',
-    terrain: () => null,
-    features: [
-      { model: 'pyramid', cells: [[11, 2], [12, 2], [11, 3], [12, 3]], landmark: 10 },
-      { model: 'mountain-desert', cells: [[1, 1], [2, 1], [1, 2], [2, 2]] },
-      { model: 'mountain-desert', cells: [[12, 12], [13, 12], [12, 13], [13, 13]], rot: Math.PI },
-    ],
-    decor: { rate: 0.3, sets: [['cactus-basic', 'cactus-big', 'cactus-medium', 'cactus-basic'], ['rock-pillar', 'rock-sharp', 'stone-flat', 'rocks-small'], ['tree-dry', 'tree-dead', 'tumbleweed']], weights: [0.55, 0.3, 0.15] },
-    roads: [[1, 8, 14, 8, 'h'], [6, 4, 6, 12, 'v']],
-    windmill: [4, 7],
-    tumbleweeds: 8,
-    mod: { dry: { v: 12, r: 3 }, solarMul: 1.6, solarFree: true },
-  },
-  {
-    id: 'oasis', ic: '🌴', nm: '沙漠綠洲', diff: '★★☆', money: 5500,
-    desc: '沙漠中央的一汪清泉，棕櫚樹環繞。越靠近水源越宜居，越遠越荒涼。',
-    rules: ['💧 綠洲水源：距水 3 格內滿意度 +16', '🏜️ 遠離水源（6 格外）滿意度 -10', '☀️ 太陽能發電 +30%'],
-    sky: '#f0dcae', sea: '#c9a66b', sand: '#dcb978',
-    terrain(i, j) { return dist(i, j, 7.5, 7.2) < 2.1 + Math.sin(i * 2 + j) * 0.35 ? 'water' : null; },
-    features: [],
-    decor: {
-      rate: 0.32, sets: [['palm', 'palm-big', 'palm-round', 'palm-angle'], ['cactus-basic', 'cactus-big', 'cactus-medium', 'tumbleweed', 'rocks-small']], weights: [1, 0],
-      pick: (i, j) => dist(i, j, 7.5, 7.2) < 4.5 ? 0 : 1,
-    },
-    roads: [[3, 3, 12, 3, 'h'], [12, 3, 12, 12, 'v'], [3, 3, 3, 11, 'v']],
-    windmill: [4, 2],
-    mod: { water: { r: 3, v: 16 }, far: { r: 6, v: 10 }, solarMul: 1.3, solarFree: true },
-  },
+const ZONES = ['res', 'com', 'ind'];
+const SERVICES = [
+  { id: 'police', ic: '🛡️', radius: 4, pop: 30, need: 4 },
+  { id: 'fire', ic: '🔥', radius: 4, pop: 70, need: 4 },
+  { id: 'school', ic: '📚', radius: 5, pop: 130, need: 6 },
+  { id: 'hospital', ic: '⚕️', radius: 5, pop: 220, need: 8 },
 ];
-const MAP = id => MAPS.find(m => m.id === id) || MAPS[0];
+const SRV = Object.fromEntries(SERVICES.map(s => [s.id, s]));
+const POP_MILESTONES = [25, 60, 120, 250, 500, 800, 1200];
+const GOAL = 90; // 繁榮度達到此值＝極致繁榮
+const SPEEDS = [0, 1, 2, 5, 10, 20];
 
-// ───────────────────────── 場景 ─────────────────────────
-const app = document.getElementById('app');
+// ═════════════════════════ 場景 ═════════════════════════
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
@@ -139,505 +33,731 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
-app.appendChild(renderer.domElement);
+document.getElementById('app').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const SKY_DAY = new THREE.Color('#9fd3f0'), SKY_NIGHT = new THREE.Color('#1b2440'), SKY_DUSK = new THREE.Color('#f2a36b');
 scene.background = SKY_DAY.clone();
-scene.fog = new THREE.Fog(scene.background, 700, 1400);
-
+scene.fog = new THREE.Fog(scene.background, 700, 1500);
 const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 3000);
 camera.position.set(260, 300, 330);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0, 0);
-controls.enableDamping = true;
-controls.maxPolarAngle = 1.25;
-controls.minDistance = 60;
-controls.maxDistance = 900;
-controls.screenSpacePanning = false;
+controls.enableDamping = true; controls.maxPolarAngle = 1.3; controls.minDistance = 40; controls.maxDistance = 900;
+controls.screenSpacePanning = false; controls.autoRotateSpeed = 0.6;
+controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
 
-const hemi = new THREE.HemisphereLight('#dff1ff', '#5b6a3a', 1.1);
-scene.add(hemi);
+const hemi = new THREE.HemisphereLight('#dff1ff', '#5b6a3a', 1.1); scene.add(hemi);
 const sun = new THREE.DirectionalLight('#fff2dd', 2.2);
-sun.position.set(220, 380, 160);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-const sc = sun.shadow.camera; sc.left = sc.bottom = -320; sc.right = sc.top = 320; sc.near = 10; sc.far = 1200;
-sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.6;
-scene.add(sun);
-
-// 底座下方的海面
+sun.position.set(220, 380, 160); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -320, bottom: -320, right: 320, top: 320, near: 10, far: 1200 });
+sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.6; scene.add(sun);
 const sea = new THREE.Mesh(new THREE.CircleGeometry(1600, 48), new THREE.MeshStandardMaterial({ color: '#4fa7c9', roughness: 0.4 }));
-sea.rotation.x = -Math.PI / 2; sea.position.y = -9; sea.receiveShadow = true;
-scene.add(sea);
-
+sea.rotation.x = -Math.PI / 2; sea.position.y = -9; scene.add(sea);
 const world = new THREE.Group(); scene.add(world);
 const agentsGroup = new THREE.Group(); scene.add(agentsGroup);
+const fxGroup = new THREE.Group(); scene.add(fxGroup);
 
-// ───────────────────────── 模型 ─────────────────────────
+// ═════════════════════════ 模型工具 ═════════════════════════
 const protos = {};
-function getProto(name) { return protos[name]; }
 function make(name) {
   const p = protos[name];
-  if (!p) { console.warn('missing model', name); return new THREE.Group(); }
   const g = new THREE.Group();
+  if (!p) { console.warn('missing model', name); return g; }
   g.add(p.clone(true));
   return g;
 }
-function fitScale(name, target = 24, max = 1.7) {
-  const s = protos[name]?.userData.size; if (!s) return 1;
-  return Math.min(max, target / Math.max(s.x, s.z));
+const sizeOf = name => protos[name]?.userData.size;
+function fitScale(name, target = 25, max = 1.6) { const s = sizeOf(name); return s ? Math.min(max, target / Math.max(s.x, s.z)) : 1; }
+function shadows(g, cast = true) { g.traverse(o => { if (o.isMesh) { o.castShadow = cast; o.receiveShadow = true; } }); return g; }
+
+const LAYOUTS = {
+  1: [[0, 0]], 2: [[-6.5, 0], [6.5, 0]], 3: [[-7, -5], [7, -5], [0, 7]], 4: [[-7, -7], [7, -7], [-7, 7], [7, 7]],
+  5: [[-8, -8], [8, -8], [-8, 8], [8, 8], [0, 0]], 6: [[-8, -6], [0, -6], [8, -6], [-8, 6], [0, 6], [8, 6]],
+};
+// 依建築規格組合出一格的模型
+function buildSpec(spec) {
+  const [m, n, s, opt = {}] = spec;
+  const g = new THREE.Group();
+  let pos;
+  if (opt.layout === 'field' || opt.layout === 'grid3' || n > 6) { pos = []; for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) pos.push([a * 8, b * 8]); pos = pos.slice(0, n); }
+  else pos = LAYOUTS[n];
+  const scale = s || fitScale(m, 25, 1.6);
+  pos.forEach(([x, z], k) => {
+    const o = make(m); o.position.set(x, 0, z); o.scale.setScalar(scale);
+    if (n > 1 && opt.layout !== 'grid3') o.rotation.y = opt.layout === 'field' ? (k * 1.7) : 0;
+    g.add(o);
+  });
+  for (const [em, x, z, es] of opt.extra || []) { const o = make(em); o.position.set(x, 0, z); o.scale.setScalar(es); g.add(o); }
+  return shadows(g);
 }
 
-// ───────────────────────── 狀態 ─────────────────────────
-let S; // 遊戲狀態（可存檔）
-let grid = []; // 每格：{type, level, mask, built(0~1), obj, trees}
+// 材質重新上色（沙地／時代道路）
+const tintCache = new Map();
+function remap(m, table, key) {
+  if (!table) return m;
+  let col = null;
+  for (const k in table) if (m.name === k || m.name.startsWith(k)) { col = table[k]; break; }
+  if (!col) return m;
+  const ck = m.uuid + key;
+  if (!tintCache.has(ck)) { const c = m.clone(); c.color = new THREE.Color(col); tintCache.set(ck, c); }
+  return tintCache.get(ck);
+}
+function applyTint(obj, table, key) {
+  obj.traverse(o => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(m => remap(m, table, key)) : remap(o.material, table, key); });
+}
+let groundTable = null;
+
+// ═════════════════════════ 區塊烘焙（合併靜態網格以減少 draw call） ═════════════════════════
+const CH = 8; // 每區塊 8×8 格
+const chunks = [];
+const bakedGroup = new THREE.Group(); scene.add(bakedGroup);
+function chunkOf(c) { return chunks[Math.floor(c.j / CH) * (N / CH) + Math.floor(c.i / CH)]; }
+function dirty(c) { const ch = chunkOf(c); if (ch) ch.dirty = true; }
+function resetChunks() {
+  for (const ch of chunks) disposeChunk(ch);
+  chunks.length = 0;
+  for (let k = 0; k < (N / CH) * (N / CH); k++) chunks.push({ dirty: true, mesh: null, cells: [] });
+  for (const c of grid) chunkOf(c).cells.push(c);
+}
+function disposeChunk(ch) { if (ch.mesh) { bakedGroup.remove(ch.mesh); ch.mesh.traverse(o => o.geometry?.dispose()); ch.mesh = null; } }
+const live = g => g && (g.userData.prop || g.userData.live);
+const VC_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
+// 把一組物件合併：不透明材質→單一頂點色網格；透明／發光材質各自一組
+function mergeObjects(srcs, rootInv) {
+  const buckets = new Map();
+  const v = new THREE.Vector3(), nv = new THREE.Vector3(), mtx = new THREE.Matrix4(), nm = new THREE.Matrix3();
+  for (const g of srcs) {
+    g.updateMatrixWorld(true);
+    g.traverse(o => {
+      if (!o.isMesh || !o.visible && o !== g) return;
+      const mat = o.material;
+      const special = mat.transparent || (mat.emissive && mat.emissiveIntensity > 0 && mat.emissive.getHex() !== 0);
+      const key = special ? mat.uuid : 'vc';
+      let b = buckets.get(key); if (!b) { b = { mat: special ? mat : VC_MAT, pos: [], nor: [], col: [], idx: [], n: 0, cast: !mat.transparent }; buckets.set(key, b); }
+      const geo = o.geometry, P = geo.attributes.position, Nn = geo.attributes.normal;
+      mtx.copy(o.matrixWorld); if (rootInv) mtx.premultiply(rootInv);
+      nm.getNormalMatrix(mtx);
+      const c = mat.color || new THREE.Color(1, 1, 1), base = b.n;
+      for (let i = 0; i < P.count; i++) {
+        v.set(P.getX(i), P.getY(i), P.getZ(i)).applyMatrix4(mtx); b.pos.push(v.x, v.y, v.z);
+        if (Nn) { nv.set(Nn.getX(i), Nn.getY(i), Nn.getZ(i)).applyMatrix3(nm).normalize(); b.nor.push(nv.x, nv.y, nv.z); } else b.nor.push(0, 1, 0);
+        if (!special) b.col.push(c.r, c.g, c.b);
+      }
+      if (geo.index) for (let i = 0; i < geo.index.count; i++) b.idx.push(base + geo.index.getX(i));
+      else for (let i = 0; i < P.count; i++) b.idx.push(base + i);
+      b.n += P.count;
+    });
+  }
+  const out = new THREE.Group();
+  for (const b of buckets.values()) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(b.nor, 3));
+    if (b.col.length) geo.setAttribute('color', new THREE.Float32BufferAttribute(b.col, 3));
+    geo.setIndex(b.n > 65535 ? new THREE.Uint32BufferAttribute(b.idx, 1) : new THREE.Uint16BufferAttribute(b.idx, 1));
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo, b.mat); mesh.castShadow = b.cast; mesh.receiveShadow = true;
+    out.add(mesh);
+  }
+  return out;
+}
+function bakeChunk(ch) {
+  const srcs = [];
+  for (const c of ch.cells) {
+    for (const g of [c.base, c.trees, c.obj]) {
+      if (!g) continue;
+      const animating = g === c.obj && (c.anim !== undefined && c.anim < 1);
+      if (animating || live(g)) { g.visible = true; continue; }
+      g.visible = true; srcs.push(g);
+    }
+  }
+  disposeChunk(ch);
+  const out = mergeObjects(srcs);
+  for (const g of srcs) g.visible = false;
+  bakedGroup.add(out); ch.mesh = out; ch.dirty = false;
+}
+// 角色／車輛：每種模型烘焙一次後共用幾何
+const agentCache = {};
+function makeAgent(name) {
+  if (!agentCache[name]) { const src = make(name); agentCache[name] = mergeObjects([src]); }
+  const g = new THREE.Group();
+  for (const m of agentCache[name].children) g.add(new THREE.Mesh(m.geometry, m.material));
+  return g;
+}
+function bakeDirty(max = 3) {
+  let k = 0;
+  for (const ch of chunks) {
+    if (!ch.dirty) continue;
+    bakeChunk(ch); if (++k >= max) break;
+  }
+}
+
+// ═════════════════════════ 狀態 ═════════════════════════
+let S;                  // 存檔狀態
+let M = MAPS[0], E = ERAS[0];
+let grid = [];
 const cellCenter = (i, j) => new THREE.Vector3((i - N / 2 + 0.5) * T, 0, (j - N / 2 + 0.5) * T);
 const inside = (i, j) => i >= 0 && j >= 0 && i < N && j < N;
 const C = (i, j) => inside(i, j) ? grid[j * N + i] : null;
-let stats = { pop: 0, jobsC: 0, jobsI: 0, powerUse: 0, powerSup: 0, hap: 50, dR: 0, dC: 0, dI: 0, income: 0 };
-let hapMap = new Float32Array(N * N);
-let speed = 1, tool = 'select', dayAcc = 0;
+const cheb = (a, b) => Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j));
+let stats = { pop: 0, jobs: 0, use: 0, sup: 0, hap: 55, dR: 0, dC: 0, dI: 0, pros: 0 };
+let speedIdx = 1, yearAcc = 0;
+const speed = () => SPEEDS[speedIdx];
 
-let M = MAPS[0]; // 目前地圖
-function newState(mapId = 'grass') {
-  const m = MAP(mapId);
-  return { map: m.id, money: m.money, day: 1, tax: 9, goal: 0, cells: [], seed: Math.floor(Math.random() * 1e9) };
+function newState(mapId, eraId) {
+  const chronicle = eraId === 'chronicle';
+  return { map: mapId, era: chronicle ? 'tribal' : eraId, chronicle, years: 0, year: (chronicle ? ERAS[0] : ERAS.find(e => e.id === eraId)).year0, cells: null, seed: Math.floor(Math.random() * 1e9), log: [], firsts: {}, popMs: 0, prosMs: 0, wonders: 0, done: false, doneAt: 0 };
 }
-
-// ───────────────────────── 建立格子 ─────────────────────────
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+let rand = Math.random;
 
-const tintCache = new Map();
-function tintMat(m) {
-  if (!M.sand || !/GREEN/i.test(m.name)) return m;
-  const key = m.uuid + M.sand;
-  if (!tintCache.has(key)) {
-    const c = m.clone();
-    const sand = new THREE.Color(M.sand);
-    if (/DARK/i.test(m.name)) sand.multiplyScalar(0.85);
-    c.color = sand; tintCache.set(key, c);
-  }
-  return tintCache.get(key);
-}
-
+// ═════════════════════════ 地圖產生 ═════════════════════════
 function buildBoard() {
-  world.clear();
-  grid = [];
-  const rand = rng(S.seed);
-  scene.background.set(M.sky); SKY_DAY.set(M.sky);
-  sea.material.color.set(M.sea);
+  world.clear(); grid = []; for (const ch of chunks) disposeChunk(ch); chunks.length = 0;
+  const r = rng(S.seed);
+  SKY_DAY.set(M.sky); scene.background.set(M.sky); sea.material.color.set(M.sea);
+  groundTable = M.sand ? { '36 GREEN': M.sand, '35 GREEN-MEDIUM': M.sand, '34 GREEN-DARK': new THREE.Color(M.sand).multiplyScalar(0.85).getStyle(), '37 GREEN-LIGHT': M.sand } : null;
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const cell = { i, j, type: 'empty', level: 0, built: 1, obj: null, base: null, trees: null, powered: true, road: false, hap: 50 };
+    const cell = { i, j, type: 'empty', level: 0, built: 1, obj: null, base: null, trees: null, powered: true, road: false, hap: 55 };
     grid.push(cell);
     const t = M.terrain(i, j);
     if (t === 'water') { cell.type = 'water'; setBase(cell, 'tile-water', 0); continue; }
     setBase(cell, 'tile-plain', 0);
-    if (t === 'hill') {
-      cell.type = 'hill'; setBase(cell, 'tile-hill', Math.floor(rand() * 4) * Math.PI / 2);
-      cell.base.position.y = 6; // tile-hill 比一般地塊高 6m，原點在山頂
-      continue;
-    }
+    if (t === 'hill') { cell.type = 'hill'; setBase(cell, 'tile-hill', Math.floor(r() * 4) * Math.PI / 2); cell.base.position.y = 6; }
   }
-  // 大型地形／地標（跨多格）
   for (const f of M.features) {
     const cs = f.cells.map(([i, j]) => C(i, j));
     const cx = cs.reduce((s, c) => s + cellCenter(c.i, c.j).x, 0) / cs.length;
     const cz = cs.reduce((s, c) => s + cellCenter(c.i, c.j).z, 0) / cs.length;
     const w = (Math.max(...f.cells.map(c => c[0])) - Math.min(...f.cells.map(c => c[0])) + 1) * T;
     const d = (Math.max(...f.cells.map(c => c[1])) - Math.min(...f.cells.map(c => c[1])) + 1) * T;
-    const g = make(f.model);
-    const sz = protos[f.model]?.userData.size;
+    const g = make(f.model), sz = sizeOf(f.model);
     if (f.scale) g.scale.setScalar(f.scale);
-    else if (sz) {
-      const rotated = Math.abs(Math.sin(f.rot || 0)) > 0.5;
-      const sx = rotated ? sz.z : sz.x, sz2 = rotated ? sz.x : sz.z;
-      g.scale.setScalar(Math.min(w / sx, d / sz2) * 0.98);
-    }
-    g.rotation.y = f.rot || 0;
-    g.position.set(cx, 0, cz);
-    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; if (M.sand && f.model.startsWith('terrain')) o.material = Array.isArray(o.material) ? o.material.map(tintMat) : tintMat(o.material); } });
+    else if (sz) { const rot = Math.abs(Math.sin(f.rot || 0)) > 0.5; g.scale.setScalar(Math.min(w / (rot ? sz.z : sz.x), d / (rot ? sz.x : sz.z)) * 0.98); }
+    g.rotation.y = f.rot || 0; g.position.set(cx, 0, cz);
+    shadows(g); if (f.model.startsWith('terrain')) applyTint(g, groundTable, 'g');
     world.add(g);
-    for (const c of cs) { c.type = f.landmark ? 'landmark' : 'mountain'; c.feature = f; }
+    for (const c of cs) c.type = f.landmark ? 'landmark' : 'mountain';
   }
-  for (const c of grid) if (c.type === 'empty' && rand() < M.decor.rate) addTrees(c, rand);
+  resetChunks();
+  for (const c of grid) if (c.type === 'empty' && r() < M.decor.rate) addDecor(c, r);
   computeTerrainDist();
 }
+function setBase(cell, name, rotY) {
+  if (cell.base) world.remove(cell.base);
+  const b = make(name);
+  b.position.copy(cellCenter(cell.i, cell.j)); b.rotation.y = rotY;
+  b.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+  if (name !== 'tile-park') applyTint(b, groundTable, 'g');
+  if (name.startsWith('tile-road')) applyTint(b, E.road, 'r' + E.id);
+  world.add(b); cell.base = b; dirty(cell);
+}
+function pickW(ws, x) { let s = 0; for (let k = 0; k < ws.length; k++) { s += ws[k]; if (x < s) return k; } return ws.length - 1; }
+function addDecor(cell, r = Math.random) {
+  const D = M.decor;
+  const set = D.sets[D.pick ? D.pick(cell.i, cell.j) : pickW(D.weights, r())];
+  const g = new THREE.Group();
+  const n = 2 + Math.floor(r() * 4);
+  for (let k = 0; k < n; k++) {
+    const t = make(set[Math.floor(r() * set.length)]);
+    t.position.set((r() - .5) * 22, 0, (r() - .5) * 22); t.rotation.y = r() * 6.28; t.scale.setScalar(1.3 + r() * 0.9);
+    g.add(t);
+  }
+  shadows(g); g.position.copy(cellCenter(cell.i, cell.j));
+  world.add(g); cell.trees = g; dirty(cell);
+}
+function clearDecor(c) { if (c.trees) { world.remove(c.trees); c.trees = null; dirty(c); } }
+
 const tDist = { water: new Float32Array(N * N), mountain: new Float32Array(N * N), landmark: new Float32Array(N * N), landmarkV: 0 };
 function computeTerrainDist() {
-  const calc = (arr, pred) => { const src = grid.filter(pred); for (const c of grid) arr[c.j * N + c.i] = src.length ? Math.min(...src.map(o => Math.max(Math.abs(o.i - c.i), Math.abs(o.j - c.j)))) : 99; };
+  const calc = (arr, pred) => { const src = grid.filter(pred); for (const c of grid) arr[c.j * N + c.i] = src.length ? Math.min(...src.map(o => cheb(o, c))) : 99; };
   calc(tDist.water, c => c.type === 'water');
   calc(tDist.mountain, c => c.type === 'mountain' || c.type === 'hill');
   calc(tDist.landmark, c => c.type === 'landmark');
   tDist.landmarkV = M.features.find(f => f.landmark)?.landmark || 0;
 }
 
-function setBase(cell, name, rotY) {
-  if (cell.base) world.remove(cell.base);
-  const b = make(name);
-  b.position.copy(cellCenter(cell.i, cell.j));
-  b.rotation.y = rotY;
-  b.traverse(o => { if (o.isMesh) { o.receiveShadow = true; if (name !== 'tile-park') o.material = Array.isArray(o.material) ? o.material.map(tintMat) : tintMat(o.material); } });
-  b.userData.cell = cell;
-  world.add(b); cell.base = b;
-}
-
-function pickWeighted(ws, r) { let s = 0; for (let k = 0; k < ws.length; k++) { s += ws[k]; if (r < s) return k; } return ws.length - 1; }
-function addTrees(cell, rand = Math.random, density = 1) {
-  const g = new THREE.Group();
-  const D = M.decor;
-  const setIdx = D.pick ? D.pick(cell.i, cell.j) : pickWeighted(D.weights, rand());
-  const set = D.sets[setIdx];
-  const n = Math.max(1, Math.round((2 + Math.floor(rand() * 4)) * density));
-  for (let k = 0; k < n; k++) {
-    const name = set[Math.floor(rand() * set.length)];
-    const t = make(name);
-    t.position.set((rand() - .5) * 22, 0, (rand() - .5) * 22);
-    t.rotation.y = rand() * 6.28;
-    t.scale.setScalar(1.3 + rand() * 0.9);
-    t.traverse(o => { if (o.isMesh) o.castShadow = true; });
-    g.add(t);
-  }
-  g.position.copy(cellCenter(cell.i, cell.j));
-  world.add(g); cell.trees = g;
-}
-function clearTrees(cell) { if (cell.trees) { world.remove(cell.trees); cell.trees = null; } }
-
-// ───────────────────────── 道路 ─────────────────────────
-function roadMask(i, j) {
-  let m = 0;
-  DIRS.forEach(([dx, dz], k) => { const n = C(i + dx, j + dz); if (n && n.type === 'road') m |= BIT[k]; });
-  return m;
-}
-// 繞 Y 軸 +90°：E→N, S→E, W→S, N→W
+// ═════════════════════════ 道路 ═════════════════════════
+const isRoad = c => c && c.type === 'road';
+function roadMask(i, j) { let m = 0; DIRS.forEach(([dx, dz], k) => { if (isRoad(C(i + dx, j + dz))) m |= BIT[k]; }); return m; }
 function rotMask(m, q) { for (let k = 0; k < q; k++) { let r = 0; if (m & 2) r |= 1; if (m & 4) r |= 2; if (m & 8) r |= 4; if (m & 1) r |= 8; m = r; } return m; }
 function pickRoad(mask) {
   if (mask === 0) return ['tile-road-straight', 0];
-  if (mask === 1 || mask === 4 || mask === 2 || mask === 8) {
-    for (let q = 0; q < 4; q++) if (rotMask(4, q) === mask) return ['tile-road-end', q * Math.PI / 2];
-  }
   for (const [name, base] of ROAD_PIECES) for (let q = 0; q < 4; q++) if (rotMask(base, q) === mask) return [name, q * Math.PI / 2];
   return ['tile-road-intersection', 0];
 }
-function refreshRoad(cell) {
-  if (cell.type !== 'road') return;
-  const m = roadMask(cell.i, cell.j);
-  if (m === cell.mask && cell.base) return;
-  cell.mask = m;
-  const [name, rot] = pickRoad(m);
-  setBase(cell, name, rot);
+function refreshRoad(c, force) {
+  const m = roadMask(c.i, c.j);
+  if (m === c.mask && !force) return;
+  c.mask = m; const [name, rot] = pickRoad(m); setBase(c, name, rot);
 }
-function refreshAround(i, j) {
-  for (const [dx, dz] of [[0, 0], ...DIRS]) { const c = C(i + dx, j + dz); if (c) { if (c.type === 'road') refreshRoad(c); else if (c.obj && c.type !== 'empty') orientBuilding(c); } }
+function refreshAround(i, j) { for (const [dx, dz] of [[0, 0], ...DIRS]) { const c = C(i + dx, j + dz); if (!c) continue; if (isRoad(c)) refreshRoad(c); else if (c.obj && !c.fixedRot) orient(c); } }
+
+// ═════════════════════════ 建築 ═════════════════════════
+function roadDir(c) { for (const k of [2, 1, 3, 0]) if (isRoad(C(c.i + DIRS[k][0], c.j + DIRS[k][1]))) return k; return -1; }
+const FACE = { 2: 0, 1: Math.PI / 2, 0: Math.PI, 3: -Math.PI / 2 };
+function orient(c) { const k = roadDir(c); c.road = k >= 0; if (c.obj && k >= 0 && !c.fixedRot) c.obj.rotation.y = FACE[k]; }
+const maxLv = t => E[t].length;
+function zoneVal(t, lv) { const v = VALS[t], mx = maxLv(t); const x = mx > 1 ? lv / (mx - 1) * (v.length - 1) : 0; const a = Math.floor(x), b = Math.min(v.length - 1, a + 1); return Math.round(v[a] + (v[b] - v[a]) * (x - a)); }
+
+function resourceFor(c) {
+  const list = E.resource;
+  if (c.resIdx !== undefined && list[c.resIdx]) return list[c.resIdx];
+  return list[0];
+}
+function resourcePower(c) {
+  const r = resourceFor(c);
+  let p = r.power * (1 + 0.8 * (c.level || 0));
+  if (r.kind === 'wind') p *= M.mod.windMul || 1;
+  if (r.kind === 'solar') p *= M.mod.solarMul || 1;
+  return Math.round(p);
 }
 
-// ───────────────────────── 建築 ─────────────────────────
-function roadDir(cell) { // 回傳鄰接道路的方向 index（優先南、東、西、北）
-  for (const k of [2, 1, 3, 0]) { const n = C(cell.i + DIRS[k][0], cell.j + DIRS[k][1]); if (n && n.type === 'road') return k; }
-  return -1;
-}
-// 建築正面朝 +Z（南）；旋轉使正面朝向道路
-const FACE_ROT = { 2: 0, 1: Math.PI / 2, 0: Math.PI, 3: -Math.PI / 2 };
-function orientBuilding(cell) {
-  const k = roadDir(cell);
-  cell.road = k >= 0;
-  if (cell.obj && k >= 0 && !cell.obj.userData.fixedRot) cell.obj.rotation.y = FACE_ROT[k];
-}
-
-function modelFor(cell) {
-  const t = cell.type;
-  if (ZONE[t]) return ZONE[t].levels[cell.level];
-  return TOOL[t]?.model;
-}
-
-function placeObject(cell, animate = true) {
-  if (cell.obj) { world.remove(cell.obj); cell.obj = null; }
-  const t = cell.type;
-  let g;
-  if (t === 'park') {
-    g = new THREE.Group();
-    const f = make('fountain'); f.scale.setScalar(1.6); g.add(f);
-    const pos = [[-9, -9], [9, 9], [-9, 9], [9, -9]];
-    pos.forEach(([x, z], k) => { const tr = make(k % 2 ? 'tree-lime' : 'tree-round'); tr.position.set(x, 0, z); tr.scale.setScalar(1.6); g.add(tr); });
-    [[0, 9.5, 0], [0, -9.5, Math.PI]].forEach(([x, z, r]) => { const b = make('bench-wood'); b.position.set(x, 0, z); b.rotation.y = r; b.scale.setScalar(1.5); g.add(b); });
-    g.userData.fixedRot = true;
-  } else if (t === 'solar') {
-    g = new THREE.Group();
-    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const p = make('solar-panel'); p.position.set(a * 8, 0, b * 7.5); p.scale.setScalar(2.2); g.add(p); }
-    g.userData.fixedRot = true;
-  } else if (t === 'power') {
-    g = make('windmill'); g.scale.setScalar(1.5);
-    g.userData.prop = g.getObjectByName('windmill-propeller');
-  } else {
-    const name = modelFor(cell);
-    g = make(name);
-    g.scale.setScalar(fitScale(name, 25, 1.6));
-  }
-  g.position.copy(cellCenter(cell.i, cell.j));
-  g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-  g.userData.baseScale = g.scale.x;
-  g.userData.cell = cell;
-  world.add(g); cell.obj = g;
-  orientBuilding(cell);
-  if (animate) { cell.anim = 0; g.scale.y = 0.001; spawnDust(cell); }
-}
-
-function addCrane(cell) {
+function makePark() {
   const g = new THREE.Group();
-  const cr = make('crane-crawler'); cr.position.set(-9, 0, 6); cr.rotation.y = 0.6; cr.scale.setScalar(1.3); g.add(cr);
-  for (const [x, z] of [[-12, 12], [12, 12], [12, -12], [-12, -12]]) { const c = make('traffic-cone'); c.position.set(x, 0, z); c.scale.setScalar(2); g.add(c); }
-  g.position.copy(cellCenter(cell.i, cell.j));
-  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
-  world.add(g); cell.crane = g;
+  const p = E.park;
+  if (p === 'tile') {
+    const f = make('fountain'); f.scale.setScalar(1.6); g.add(f);
+    [[-9, -9], [9, 9], [-9, 9], [9, -9]].forEach(([x, z], k) => { const t = make(k % 2 ? 'tree-lime' : 'tree-round'); t.position.set(x, 0, z); t.scale.setScalar(1.6); g.add(t); });
+    [[0, 9.5, 0], [0, -9.5, Math.PI]].forEach(([x, z, r]) => { const b = make('bench-wood'); b.position.set(x, 0, z); b.rotation.y = r; b.scale.setScalar(1.5); g.add(b); });
+  } else {
+    const sets = { grove: ['tree-oak', 'tree-lime', 'tree-round', 'shrub-flowers'], palms: ['palm', 'palm-big', 'palm-round'], zen: ['tree-bonsai', 'japan-tree-tall', 'shrub-round'], ranch: ['horse', 'cow', 'haystack', 'tree-oak'] }[p];
+    const pts = [[-9, -9], [9, -8], [-8, 9], [9, 9], [0, 0], [0, -11], [-11, 1], [11, 0]];
+    pts.forEach(([x, z], k) => { const t = make(sets[k % sets.length]); t.position.set(x, 0, z); t.rotation.y = k; t.scale.setScalar(p === 'zen' ? 1.3 : 1.8); g.add(t); });
+    if (p === 'zen') { const l = make('lantern-long'); l.scale.setScalar(3); g.add(l); }
+    if (p === 'palms' || p === 'grove') { const w = make('well'); w.scale.setScalar(2.2); w.position.set(0, 0, 0); g.add(w); }
+    if (p === 'ranch') { [[-12, 0, Math.PI / 2], [12, 0, Math.PI / 2], [0, -12, 0], [0, 12, 0]].forEach(([x, z, r]) => { for (let k = -2; k <= 2; k++) { const f = make('fence'); f.scale.setScalar(2.4); f.rotation.y = r; f.position.set(x + (r ? 0 : k * 5.4), 0, z + (r ? k * 5.4 : 0)); g.add(f); } }); }
+  }
+  return shadows(g);
 }
-function removeCrane(cell) { if (cell.crane) { world.remove(cell.crane); cell.crane = null; } }
 
-// 簡單粒子：煙塵
+function specFor(c) {
+  if (ZONES.includes(c.type)) return E[c.type][Math.min(c.level, maxLv(c.type) - 1)];
+  if (SRV[c.type]) return E[c.type];
+  if (c.type === 'resource') return resourceFor(c).m;
+  return null;
+}
+function placeObject(c, animate = true) {
+  if (c.obj) { world.remove(c.obj); dirty(c); }
+  let g;
+  c.fixedRot = false;
+  if (c.type === 'park') { g = makePark(); c.fixedRot = true; }
+  else if (c.type === 'wonder') { g = buildWonder(c); c.fixedRot = true; }
+  else {
+    const spec = specFor(c);
+    g = buildSpec(spec);
+    if (spec[3]?.layout === 'grid3' || spec[3]?.layout === 'field') c.fixedRot = true;
+    const prop = g.getObjectByName('windmill-propeller'); if (prop) g.userData.prop = prop;
+  }
+  const ctr = c.wonderCenter || cellCenter(c.i, c.j);
+  g.position.copy(ctr);
+  g.userData.baseScale = 1;
+  world.add(g); c.obj = g; dirty(c);
+  if (!c.fixedRot) orient(c);
+  if (animate) { c.anim = 0; g.scale.y = 0.001; dust(ctr, c.type === 'wonder' ? 30 : 10); }
+}
+
+// 奇觀
+function buildWonder(c) {
+  const era = ERAS.find(e => e.id === c.wEra) || E;
+  const w = era.wonders[c.wIdx];
+  const span = c.wSpan || 1, target = span * T - 4;
+  if (w.build === 'stonehenge') {
+    const g = new THREE.Group();
+    const R = target * 0.4, ps = span > 1 ? 2.4 : 1.3;
+    for (let k = 0; k < 14; k++) { const a = k / 14 * Math.PI * 2; const p = make('rock-pillar'); p.position.set(Math.cos(a) * R, 0, Math.sin(a) * R); p.rotation.y = -a; p.scale.setScalar(ps); g.add(p); }
+    for (let k = 0; k < 5; k++) { const a = k / 5 * Math.PI * 2; const p = make('rock-pillar'); p.position.set(Math.cos(a) * R * 0.45, 0, Math.sin(a) * R * 0.45); p.rotation.y = -a; p.scale.setScalar(ps * 1.3); g.add(p); }
+    const f = make('fire'); f.scale.setScalar(ps * 1.6); g.add(f);
+    return shadows(g);
+  }
+  const [m, n, s, opt] = w.spec;
+  let spec = w.spec;
+  if (n === 1) spec = [m, 1, s ? s * span : Math.min(fitScale(m, target, 9), w.tall ? 2.2 : 9), opt];
+  else spec = [m, n, s * (span > 1 ? 1.5 : 1), opt];
+  const g = buildSpec(spec);
+  if (n > 1 && span > 1) g.children.forEach(o => { o.position.x *= 1.8; o.position.z *= 1.8; });
+  return g;
+}
+
+function addConstruction(c) {
+  const g = new THREE.Group();
+  const ctr = c.wonderCenter || cellCenter(c.i, c.j);
+  if (E.constr === 'crane') {
+    const cr = make('crane-crawler'); cr.position.set(-9, 0, 6); cr.rotation.y = 0.6; cr.scale.setScalar(1.3); g.add(cr);
+    for (const [x, z] of [[-12, 12], [12, 12], [12, -12], [-12, -12]]) { const k = make('traffic-cone'); k.position.set(x, 0, z); k.scale.setScalar(2); g.add(k); }
+  } else {
+    const l = make(E.constr); l.position.set(-6, 0, 6); l.scale.setScalar(2.4); l.rotation.y = 0.5; g.add(l);
+    const lg = make('logs'); lg.position.set(7, 0, -5); lg.scale.setScalar(2.4); g.add(lg);
+    const ld = make('ladder-wood'); ld.position.set(0, 0, 0); ld.scale.setScalar(2.6); g.add(ld);
+  }
+  shadows(g); g.position.copy(ctr);
+  world.add(g); c.crane = g;
+}
+function removeConstruction(c) { if (c.crane) { world.remove(c.crane); c.crane = null; } }
+
 const dustGeo = new THREE.SphereGeometry(1, 6, 5);
-const dustMat = new THREE.MeshStandardMaterial({ color: '#d9cdb6', transparent: true, opacity: .8, roughness: 1 });
 const dusts = [];
-function spawnDust(cell) {
-  const c = cellCenter(cell.i, cell.j);
-  for (let k = 0; k < 10; k++) {
-    const m = new THREE.Mesh(dustGeo, dustMat.clone());
-    m.position.set(c.x + (Math.random() - .5) * 20, 1, c.z + (Math.random() - .5) * 20);
-    m.userData.v = new THREE.Vector3((Math.random() - .5) * 8, 6 + Math.random() * 6, (Math.random() - .5) * 8);
-    m.userData.life = 1;
+function dust(ctr, n = 10) {
+  if (dusts.length > 160) return;
+  for (let k = 0; k < n; k++) {
+    const m = new THREE.Mesh(dustGeo, new THREE.MeshStandardMaterial({ color: '#d9cdb6', transparent: true, opacity: .8 }));
+    m.position.set(ctr.x + (Math.random() - .5) * 20, 1, ctr.z + (Math.random() - .5) * 20);
+    m.userData = { v: new THREE.Vector3((Math.random() - .5) * 8, 6 + Math.random() * 6, (Math.random() - .5) * 8), life: 1, kind: 'dust' };
     scene.add(m); dusts.push(m);
   }
 }
-
-// ───────────────────────── 操作 ─────────────────────────
-function canAfford(c) { if (S.money >= c) return true; toast('資金不足！', 'bad'); return false; }
-
-function apply(cell, t, silent = false) {
-  if (!cell) return false;
-  const def = TOOL[t];
-  if (t === 'select') { showInfo(cell); return false; }
-  if (TERRAIN.has(cell.type)) { if (!silent) toast(cell.type === 'water' ? '🌊 水面上無法建造' : cell.type === 'landmark' ? '🔺 古蹟受保護，無法建造' : '⛰️ 山地無法建造', 'bad'); return false; }
-  if (t === 'bulldoze') {
-    if (cell.type === 'empty' && !cell.trees) return false;
-    if (!canAfford(def.cost)) return false;
-    S.money -= def.cost;
-    clearCell(cell); refreshAround(cell.i, cell.j);
-    spawnDust(cell);
-    return true;
+function fireworks(ctr, n = 60) {
+  if (dusts.length > 200) return;
+  const cols = ['#ff5a5a', '#ffd84a', '#5ad1ff', '#9dff7a', '#ff7af0'];
+  for (let b = 0; b < 4; b++) {
+    const base = new THREE.Vector3(ctr.x + (Math.random() - .5) * 80, 70 + Math.random() * 40, ctr.z + (Math.random() - .5) * 80);
+    const col = cols[Math.floor(Math.random() * cols.length)];
+    for (let k = 0; k < n / 4; k++) {
+      const m = new THREE.Mesh(dustGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true }));
+      m.position.copy(base);
+      const v = new THREE.Vector3(Math.random() - .5, Math.random() - .5, Math.random() - .5).normalize().multiplyScalar(25 + Math.random() * 10);
+      m.userData = { v, life: 1 + b * 0.25, kind: 'fw' };
+      m.scale.setScalar(1.3); scene.add(m); dusts.push(m);
+    }
   }
-  if (def.unlock && stats.pop < def.unlock && !(t === 'solar' && M.mod.solarFree)) { if (!silent) toast(`需要人口 ${def.unlock} 才能解鎖「${def.nm}」`, 'bad'); return false; }
-  if (cell.type !== 'empty') { if (!silent && cell.type !== t) toast('這裡已經有東西了，先拆除吧', 'bad'); return false; }
-  if (!canAfford(def.cost)) return false;
-  S.money -= def.cost;
-  clearTrees(cell);
-  cell.type = t; cell.level = 0;
-  if (t === 'road') {
-    cell.mask = -1; refreshAround(cell.i, cell.j);
-  } else {
-    if (t === 'park') setBase(cell, 'tile-park', 0);
-    cell.built = 0;
-    addCrane(cell);
-    if (roadDir(cell) < 0 && t !== 'park' && !silent) toast('提示：建築需要連接道路才能運作', '');
-  }
-  return true;
 }
 
-function clearCell(cell) {
-  if (cell.obj) world.remove(cell.obj);
-  removeCrane(cell); clearTrees(cell);
-  cell.obj = null; cell.type = 'empty'; cell.level = 0; cell.built = 1; cell.mask = undefined;
-  setBase(cell, 'tile-plain', 0);
+// ═════════════════════════ 建造（AI 使用） ═════════════════════════
+function buildAt(c, type, extra = {}) {
+  clearDecor(c);
+  c.type = type; c.level = 0; Object.assign(c, extra);
+  if (type === 'road') { c.mask = -1; refreshAround(c.i, c.j); return; }
+  if (type === 'park' && E.park === 'tile') setBase(c, 'tile-park', 0);
+  c.built = 0; addConstruction(c);
+  refreshAround(c.i, c.j);
 }
+function firstOf(key, text) { if (!S.firsts[key]) { S.firsts[key] = 1; log(text); } }
 
-// ───────────────────────── 模擬 ─────────────────────────
-function simulateDay() {
-  // 電力
+// ═════════════════════════ 模擬 ═════════════════════════
+function simulate() {
+  const blds = grid.filter(c => c.built >= 1 && !TERRAIN.has(c.type) && c.type !== 'empty' && c.type !== 'road' && c.anchor !== false);
   let sup = 0, use = 0;
-  const buildings = grid.filter(c => c.type !== 'empty' && c.type !== 'road' && !TERRAIN.has(c.type) && c.built >= 1);
-  for (const c of buildings) {
-    c.road = roadDir(c) >= 0;
-    const d = TOOL[c.type];
-    if ((c.type === 'power' || c.type === 'solar') && c.road) sup += Math.round(d.power * ((c.type === 'power' ? M.mod.windMul : M.mod.solarMul) || 1));
-  }
-  const consumers = buildings.filter(c => ZONE[c.type] || (TOOL[c.type].power < 0));
-  for (const c of consumers) {
-    const need = ZONE[c.type] ? (c.level + 1) * (c.type === 'ind' ? 3 : c.type === 'com' ? 2 : 1) : -TOOL[c.type].power;
-    c.need = need;
+  for (const c of blds) { c.road = roadDir(c) >= 0 || c.type === 'wonder'; if (c.type === 'resource' && c.road) sup += resourcePower(c); }
+  for (const c of blds) {
+    const need = ZONES.includes(c.type) ? (c.level + 1) * (c.type === 'ind' ? 3 : c.type === 'com' ? 2 : 1) : SRV[c.type] ? SRV[c.type].need : 0;
+    if (!need) { c.powered = true; continue; }
     if (c.road && use + need <= sup) { use += need; c.powered = true; } else c.powered = false;
   }
-
-  // 覆蓋範圍與滿意度
-  const cover = { park: new Float32Array(N * N), police: new Uint8Array(N * N), fire: new Uint8Array(N * N), school: new Uint8Array(N * N), hospital: new Uint8Array(N * N), poll: new Float32Array(N * N) };
+  const cover = { park: new Float32Array(N * N), police: new Uint8Array(N * N), fire: new Uint8Array(N * N), school: new Uint8Array(N * N), hospital: new Uint8Array(N * N), poll: new Float32Array(N * N), wonder: new Uint8Array(N * N) };
   const stamp = (c, r, f) => { for (let j = c.j - r; j <= c.j + r; j++) for (let i = c.i - r; i <= c.i + r; i++) if (inside(i, j)) f(j * N + i, Math.max(Math.abs(i - c.i), Math.abs(j - c.j))); };
-  for (const c of buildings) {
+  for (const c of blds) {
     if (c.type === 'park') stamp(c, 3, (k, d) => cover.park[k] += d <= 1 ? 12 : 6);
-    else if (cover[c.type] && c.powered && c.road) stamp(c, TOOL[c.type].radius, k => cover[c.type][k] = 1);
-    else if (c.type === 'ind' && c.powered) stamp(c, 3, (k, d) => cover.poll[k] += (c.level + 1) * (d <= 1 ? 6 : 3));
+    else if (SRV[c.type] && c.powered && c.road) stamp(c, SRV[c.type].radius, k => cover[c.type][k] = 1);
+    else if (c.type === 'ind' && c.powered) stamp(c, 2, (k, d) => cover.poll[k] += (c.level + 1) * (d <= 1 ? 5 : 2.5));
+    else if (c.type === 'wonder') stamp(c, 4, k => cover.wonder[k] = 1);
   }
-  let pop = 0, jobsC = 0, jobsI = 0;
-  for (const c of grid) if (ZONE[c.type] && c.built >= 1 && c.road && c.powered) {
-    const v = ZONE[c.type].val[c.level];
-    if (c.type === 'res') pop += v; else if (c.type === 'com') jobsC += v; else jobsI += v;
+  let pop = 0, jC = 0, jI = 0;
+  for (const c of blds) if (ZONES.includes(c.type) && c.road && c.powered) {
+    const v = zoneVal(c.type, c.level);
+    if (c.type === 'res') pop += v; else if (c.type === 'com') jC += v; else jI += v;
   }
-  const workers = pop * 0.55, jobs = jobsC + jobsI;
+  const workers = pop * 0.55, jobs = jC + jI;
   const unemp = workers > 0 ? Math.max(0, workers - jobs) / workers : 0;
-  const bigCity = Math.min(1, pop / 300); // 城市越大越在意公共服務
-  let hapSum = 0, hapW = 0;
+  const big = Math.min(1, pop / 300);
+  let hs = 0, hw = 0;
   for (let k = 0; k < N * N; k++) {
     const c = grid[k];
-    let h = 55 + Math.min(24, cover.park[k]) - Math.min(36, cover.poll[k]) - (S.tax - 9) * 2.5 - unemp * 25;
-    h += cover.police[k] ? 8 : -8 * bigCity;
-    h += cover.fire[k] ? 6 : -6 * bigCity;
-    h += cover.school[k] ? 8 : -5 * bigCity;
-    h += cover.hospital[k] ? 8 : -5 * bigCity;
-    for (const [dx, dz] of DIRS) { const n = C(c.i + dx, c.j + dz); if (n && n.trees) h += 2; }
-    if (ZONE[c.type] && !c.powered) h -= 25;
-    const mod = M.mod;
-    if (mod.treeBonus) for (const [dx, dz] of DIRS) { const n = C(c.i + dx, c.j + dz); if (n && n.trees) h += mod.treeBonus; }
-    if (mod.water && tDist.water[k] <= mod.water.r) h += mod.water.v;
-    if (mod.far && tDist.water[k] > mod.far.r) h -= mod.far.v;
-    if (mod.mountain && tDist.mountain[k] <= mod.mountain.r) h += mod.mountain.v;
-    if (mod.dry && !cover.park[k]) h -= mod.dry.v;
+    let h = 56 + Math.min(24, cover.park[k]) - Math.min(30, cover.poll[k]) - unemp * 22;
+    h += cover.police[k] ? 7 : -7 * big; h += cover.fire[k] ? 5 : -5 * big;
+    h += cover.school[k] ? 7 : -4 * big; h += cover.hospital[k] ? 7 : -4 * big;
+    if (cover.wonder[k]) h += 8;
+    const md = M.mod;
+    if (md.treeBonus) for (const [dx, dz] of DIRS) { const n = C(c.i + dx, c.j + dz); if (n && n.trees) h += md.treeBonus; }
+    if (md.water && tDist.water[k] <= md.water.r) h += md.water.v;
+    if (md.far && tDist.water[k] > md.far.r) h -= md.far.v;
+    if (md.mountain && tDist.mountain[k] <= md.mountain.r) h += md.mountain.v;
+    if (md.dry && !cover.park[k]) h -= md.dry.v;
     if (tDist.landmark[k] <= 3) h += tDist.landmarkV;
-    h = Math.max(0, Math.min(100, h));
-    hapMap[k] = h; c.hap = h;
-    if (c.type === 'res' && c.built >= 1) { const w = ZONE.res.val[c.level]; hapSum += h * w; hapW += w; }
+    if (ZONES.includes(c.type) && !c.powered) h -= 25;
+    c.hap = Math.max(0, Math.min(100, h));
+    c.cov = { police: cover.police[k], fire: cover.fire[k], school: cover.school[k], hospital: cover.hospital[k] };
+    if (c.type === 'res' && c.built >= 1) { const w = zoneVal('res', c.level); hs += c.hap * w; hw += w; }
   }
-  const hap = hapW ? hapSum / hapW : 55;
-
+  const hap = hw ? hs / hw : 56;
   const cl = v => Math.max(-1, Math.min(1, v));
-  const dR = cl((jobs - workers + 16 + (hap - 50) * 0.6 - (S.tax - 9) * 3) / 40);
-  const dC = cl((pop * 0.32 - jobsC + 6) / 30);
-  const dI = cl((pop * 0.30 - jobsI + 12) / 30);
+  const dR = cl((jobs - workers + 14 + (hap - 50) * 0.5) / 36);
+  const dC = cl((pop * 0.34 - jC + 6) / 28);
+  const dI = cl((pop * 0.28 - jI + 10) / 28);
   const D = { res: dR, com: dC, ind: dI };
 
   // 成長／衰退
-  for (const c of grid) {
-    if (!ZONE[c.type] || c.built < 1 || !c.road || !c.powered) continue;
-    const z = ZONE[c.type];
-    const need = 38 + c.level * 9;
-    if (D[c.type] > 0.05 && c.hap >= need && c.level < z.levels.length - 1) {
-      if (c.type === 'com' && c.level === 4 && pop < 500) continue; // 摩天大樓需要人口 500
-      if (Math.random() < 0.05 + D[c.type] * 0.08) { c.level++; placeObject(c); }
-    } else if ((c.hap < 22 || D[c.type] < -0.6) && c.level > 0 && Math.random() < 0.03) {
-      c.level--; placeObject(c);
+  for (const c of blds) {
+    if (!ZONES.includes(c.type) || !c.road || !c.powered) continue;
+    const need = 36 + c.level * 7;
+    if ((D[c.type] > -0.1 || (c.hap >= 68 && D[c.type] > -0.6)) && c.hap >= need && c.level < maxLv(c.type) - 1) {
+      if (rand() < 0.06 + Math.max(0, D[c.type]) * 0.1) { c.level++; placeObject(c); }
+    } else if (c.hap < 20 && c.level > 0 && rand() < 0.03) { c.level--; placeObject(c); }
+  }
+
+  // 繁榮度
+  const lots = grid.filter(c => !TERRAIN.has(c.type) && !isRoad(c) && (!onLine(c) || c.type !== 'empty'));
+  const buildable = lots.length;
+  const zoned = blds.filter(c => ZONES.includes(c.type));
+  const developed = lots.filter(c => c.type !== 'empty' && c.built >= 1).length;
+  const dev = Math.min(1, developed / Math.max(1, buildable * 0.92));
+  const lvl = zoned.length ? zoned.reduce((s, c) => s + c.level / Math.max(1, maxLv(c.type) - 1), 0) / zoned.length : 0;
+  const hapN = Math.max(0, Math.min(1, (hap - 35) / 40));
+  const wonders = Math.min(3, grid.filter(c => c.type === 'wonder' && c.anchor && c.built >= 1 && c.wEra === E.id).length);
+  const pros = Math.round(100 * (0.3 * dev + 0.35 * lvl * Math.min(1, dev * 1.5) + 0.2 * hapN * Math.min(1, dev * 2) + 0.15 * wonders / 3));
+  stats = { pop, jobs, use, sup, hap, dR, dC, dI, pros, D, dev, lvl, zoned: zoned.length, buildable, wonders };
+
+  // 里程碑
+  while (S.popMs < POP_MILESTONES.length && pop >= POP_MILESTONES[S.popMs]) { log(`👥 人口突破 ${POP_MILESTONES[S.popMs]} 人`); S.popMs++; }
+  const pm = [25, 50, 75];
+  while (S.prosMs < pm.length && pros >= pm[S.prosMs]) { log(`📈 繁榮度達到 ${pm[S.prosMs]}%`); S.prosMs++; }
+  if (!S.done && pros >= GOAL) {
+    S.done = true; S.doneAt = S.years;
+    log(`🏆 ${E.nm}文明達到極致繁榮！`, true);
+    fireworks(new THREE.Vector3(0, 0, 0), 80);
+    if (!S.chronicle || E === ERAS[ERAS.length - 1]) showVictory();
+    else toast(`🏆 ${E.nm}達到極致繁榮！文明即將邁入下一個時代…`, 'good');
+  }
+  if (S.chronicle && S.done && S.years - S.doneAt >= 8 && S.years - (S.eraStart || 0) >= 45 && E !== ERAS[ERAS.length - 1]) advanceEra();
+}
+
+// ═════════════════════════ 自動發展 AI ═════════════════════════
+const mod3 = x => ((x % 3) + 3) % 3;
+const center = () => ({ i: M.center[0], j: M.center[1] });
+const free = c => c && c.type === 'empty';
+const underConstruction = () => grid.filter(c => c.built < 1 && c.type !== 'empty' && !TERRAIN.has(c.type)).length;
+const onLine = c => mod3(c.i - M.center[0]) === 0 || mod3(c.j - M.center[1]) === 0;
+// 格線上的格子保留給道路；只有當格線被地形阻斷時才允許蓋在上面
+function roadAdjFree() {
+  return grid.filter(c => free(c) && roadDir(c) >= 0 && (!onLine(c) || lineBlocked(c)));
+}
+function lineBlocked(c) {
+  // 這格在格線上，但兩端都通不到其他可走的格子（被地形包夾）→ 可以拿來蓋建築
+  return DIRS.filter(([dx, dz]) => { const n = C(c.i + dx, c.j + dz); return n && !TERRAIN.has(n.type) && onLine(n) && (free(n) || isRoad(n)); }).length <= 1 && !DIRS.some(([dx, dz]) => free(C(c.i + dx, c.j + dz)) && onLine(C(c.i + dx, c.j + dz)));
+}
+function nearCenter(c) { const o = center(); return Math.hypot(c.i - o.i, c.j - o.j); }
+
+function extendRoads(n) {
+  const o = center();
+  let made = 0;
+  for (let k = 0; k < n; k++) {
+    let cand = grid.filter(c => free(c) && DIRS.some(([dx, dz]) => isRoad(C(c.i + dx, c.j + dz))) && (mod3(c.i - o.i) === 0 || mod3(c.j - o.j) === 0));
+    // 不在格線交叉以外的位置形成並排道路
+    cand = cand.filter(c => !(mod3(c.i - o.i) !== 0 && mod3(c.j - o.j) !== 0));
+    if (!cand.length) cand = grid.filter(c => free(c) && DIRS.some(([dx, dz]) => isRoad(C(c.i + dx, c.j + dz))) && DIRS.filter(([dx, dz]) => free(C(c.i + dx, c.j + dz))).length >= 2 && DIRS.filter(([dx, dz]) => isRoad(C(c.i + dx, c.j + dz))).length === 1);
+    if (!cand.length) break;
+    cand.sort((a, b) => nearCenter(a) - nearCenter(b) + (rand() - .5) * 1.2);
+    buildAt(cand[0], 'road'); made++;
+  }
+  if (made) firstOf('road', `🛤️ 居民開闢了第一條道路`);
+  return made;
+}
+
+function bestCell(scoreFn) {
+  const cs = roadAdjFree();
+  if (!cs.length) return null;
+  let best = null, bs = -1e9;
+  for (const c of cs) { const s = scoreFn(c) + rand() * 0.8; if (s > bs) { bs = s; best = c; } }
+  return best;
+}
+const countNear = (c, r, pred) => grid.filter(o => cheb(o, c) <= r && pred(o)).length;
+
+function aiTurn() {
+  const pop = stats.pop;
+  let actions = 2 + Math.min(4, Math.floor(pop / 200));
+  const maxCon = 2 + Math.min(8, Math.floor(pop / 80));
+  const nm = E.names;
+  const act = () => --actions > 0 && underConstruction() < maxCon;
+
+  // 1. 資源（水源／糧倉／電力）：不足時新建，土地不夠或已有多座就升級
+  const resCells = grid.filter(c => c.type === 'resource');
+  const resBuilding = resCells.some(c => c.built < 1);
+  const projected = stats.use + 4 + Math.ceil(stats.zoned * 0.3);
+  if (!resBuilding && stats.sup <= projected) {
+    const list = E.resource;
+    let idx = 0;
+    list.forEach((r, k) => { if ((r.minPop || 0) <= pop) idx = k; });
+    if (list[idx].kind === 'wind' && M.mod.sunny && list[1] && (list[1].minPop || 0) <= pop) idx = 1;
+    // 現代：把舊電廠換成新型電廠；古代：擴建（等級 +1）
+    const upg = resCells.filter(c => c.built >= 1 && ((list.length > 1 && (c.resIdx || 0) < idx) || (list.length === 1 && (c.level || 0) < 5) || (list.length > 1 && (c.resIdx || 0) === list.length - 1 && (c.level || 0) < 2 && (c.resIdx || 0) >= idx)))
+      .sort((a, b) => resourcePower(a) - resourcePower(b))[0];
+    const cell = resCells.length >= 2 + Math.floor(pop / 500) || !roadAdjFree().length ? upg : null;
+    if (cell) {
+      if (list.length > 1 && (cell.resIdx || 0) < idx) cell.resIdx = idx; else cell.level = (cell.level || 0) + 1;
+      cell.built = 0; if (cell.obj) { world.remove(cell.obj); cell.obj = null; dirty(cell); } addConstruction(cell);
+      const lvTag = list.length > 1 ? 'i' + cell.resIdx + 'l' + (cell.level || 0) : 'l' + cell.level;
+      firstOf(E.id + 'resup' + lvTag, `🔧 ${nm.resource}擴建升級${list.length > 1 && cell.resIdx === idx && !cell.level ? `為「${['風力發電', '太陽能電廠', '核能電廠'][idx]}」` : `（第 ${(cell.level || 0) + 1} 級）`}`);
+      if (!act()) return;
+    } else {
+      const c = bestCell(c => nearCenter(c) * 0.7 - countNear(c, 1, o => o.type === 'res') * 1.5);
+      if (c) { buildAt(c, 'resource', { resIdx: idx }); firstOf('resource', `${E.ic} 建立了第一座${nm.resource}`); if (!act()) return; }
     }
   }
-
-  // 財政
-  const roads = grid.filter(c => c.type === 'road').length;
-  let upkeep = roads * 0.15;
-  for (const c of buildings) if (TOOL[c.type]?.upkeep) upkeep += TOOL[c.type].upkeep;
-  const filledC = Math.min(jobsC, workers), filledI = Math.min(jobsI, Math.max(0, workers - filledC));
-  const income = S.tax / 100 * (pop * 4 + filledC * 3.2 + filledI * 2.6) - upkeep;
-  S.money += income;
-  S.day++;
-  stats = { pop, jobsC, jobsI, powerUse: use, powerSup: sup, hap, dR, dC, dI, income };
-
-  // 目標
-  if (S.goal < GOALS.length && pop >= GOALS[S.goal]) {
-    const g = GOALS[S.goal]; S.goal++;
-    const bonus = g * 5; S.money += bonus;
-    const unlocked = TOOLS.filter(t => t.unlock && t.unlock <= pop && t.unlock > (GOALS[S.goal - 2] ?? 0)).map(t => t.nm);
-    toast(`🎉 人口達到 ${g}！獎勵 $${bonus}${unlocked.length ? '，解鎖：' + unlocked.join('、') : ''}`, 'good');
+  // 2. 公共建設
+  for (const s of SERVICES) {
+    if (pop < s.pop) continue;
+    if (grid.some(c => c.type === s.id && c.built < 1)) continue;
+    const res = grid.filter(c => (c.type === 'res' || c.type === 'com') && c.built >= 1);
+    const uncovered = res.filter(c => !c.cov?.[s.id]);
+    const have = grid.some(c => c.type === s.id);
+    if (have && uncovered.length < Math.max(3, res.length * 0.25)) continue;
+    const c = bestCell(c => uncovered.filter(o => cheb(o, c) <= s.radius).length * 2 - nearCenter(c) * 0.2);
+    if (c) { buildAt(c, s.id); firstOf(s.id, `${s.ic} 建立了第一座${nm[s.id]}`); if (!act()) return; }
   }
-  if (S.money < -2000) toast('⚠️ 財政赤字嚴重！調整稅率或減少支出', 'bad');
-  if (S.day % 30 === 0) save(true);
-  updateHUD();
+  // 3. 公園
+  const parks = grid.filter(c => c.type === 'park').length;
+  if (stats.zoned >= 6 && parks < stats.zoned / 7 + (M.mod.dry ? stats.zoned / 10 : 0)) {
+    const c = bestCell(c => countNear(c, 3, o => o.type === 'res') * 1.5 - (c.hap - 50) * 0.08 - countNear(c, 2, o => o.type === 'park') * 3);
+    if (c) { buildAt(c, 'park'); firstOf('park', `🌳 開闢了第一座${nm.park}`); if (!act()) return; }
+  }
+  // 4. 奇觀
+  const wb = grid.filter(c => c.type === 'wonder' && c.anchor && c.wEra === E.id).length;
+  const wNeed = [18, 42, 66][wb];
+  if (wb < 3 && stats.pros >= wNeed && !grid.some(c => c.type === 'wonder' && c.built < 1)) { if (placeWonder(wb) && !act()) return; }
+  // 5. 道路擴張
+  const avail = roadAdjFree().length;
+  if (avail < 4 + Math.floor(pop / 150)) extendRoads(2 + Math.floor(pop / 300));
+  // 6. 分區
+  const D = stats.D || { res: 1, com: 0, ind: 0 };
+  const zonedTotal = stats.zoned;
+  for (let k = 0; k < 3 && actions > 0 && underConstruction() < maxCon; k++) {
+    let t = 'res';
+    if (zonedTotal === 0) t = 'res';
+    else {
+      const w = { res: D.res + 0.25, com: D.com, ind: D.ind };
+      t = ZONES.reduce((a, b) => w[b] > w[a] ? b : a, 'res');
+      if (w[t] < -0.2) break;
+    }
+    const c = bestCell(c => t === 'res' ? -nearCenter(c) + (c.hap - 50) * 0.08 - countNear(c, 2, o => o.type === 'ind') * 2
+      : t === 'com' ? -nearCenter(c) * 1.3 + DIRS.filter(([dx, dz]) => isRoad(C(c.i + dx, c.j + dz))).length * 1.5
+        : nearCenter(c) * 0.4 - countNear(c, 2, o => o.type === 'res') * 2.5 - (tDist.water[c.j * N + c.i] <= 2 ? 3 : 0));
+    if (!c) { extendRoads(2); break; }
+    buildAt(c, t);
+    firstOf(E.id + t, `${t === 'res' ? '🏠' : t === 'com' ? '🏪' : '🌾'} 出現了第一處${nm[t]}`);
+    actions--;
+  }
 }
 
-// ───────────────────────── 交通：車輛與行人 ─────────────────────────
-const CARS = ['car-passenger', 'car-taxi', 'car-police', 'car-passenger', 'car-taxi', 'car-truck-dump'];
-const PEOPLE = ['man-casual', 'woman-casual', 'woman-casual-pants', 'man-tie'];
+function placeWonder(idx) {
+  const w = E.wonders[idx];
+  // 優先尋找 2×2 空地
+  let best = null, bs = -1e9;
+  for (let j = 0; j < N - 1; j++) for (let i = 0; i < N - 1; i++) {
+    const cs = [C(i, j), C(i + 1, j), C(i, j + 1), C(i + 1, j + 1)];
+    if (!cs.every(free) || cs.some(onLine)) continue;
+    if (!cs.some(c => roadDir(c) >= 0)) continue;
+    const s = -Math.hypot(i + 0.5 - M.center[0], j + 0.5 - M.center[1]) * 0.6 + rand();
+    if (s > bs) { bs = s; best = cs; }
+  }
+  let cells = best, span = 2;
+  if (!cells) { const c = bestCell(c => -nearCenter(c)); if (c) { cells = [c]; span = 1; } }
+  if (!cells) {
+    // 城市更新：拆除一處低等級的民居或工坊來興建奇觀
+    const old = grid.filter(c => (c.type === 'res' || c.type === 'ind') && c.built >= 1 && c.road).sort((a, b) => a.level - b.level || nearCenter(a) - nearCenter(b))[0];
+    if (!old) return false;
+    if (old.obj) { world.remove(old.obj); old.obj = null; dirty(old); }
+    old.type = 'empty'; cells = [old]; span = 1;
+    log(`🏚️ 舊街區拆除，騰出空間興建奇觀`);
+  }
+  const ctr = cells.reduce((v, c) => v.add(cellCenter(c.i, c.j)), new THREE.Vector3()).multiplyScalar(1 / cells.length);
+  cells.forEach((c, k) => { clearDecor(c); c.type = 'wonder'; c.wEra = E.id; c.wIdx = idx; c.wSpan = span; c.wonderCenter = ctr; c.anchor = k === 0; c.level = 0; c.built = k === 0 ? 0 : 1; c.group = cells; });
+  addConstruction(cells[0]); cells[0].crane.scale.setScalar(span > 1 ? 1.6 : 1);
+  log(`🏗️ 開始建造奇觀「${w.nm}」`);
+  return true;
+}
+
+function advanceEra() {
+  const k = ERAS.indexOf(E);
+  const next = ERAS[k + 1];
+  const oldE = E;
+  E = next; S.era = next.id; S.done = false; S.prosMs = 0; S.eraStart = S.years;
+  S.year = Math.max(S.year, next.year0);
+  log(`${next.ic} 文明邁入新時代：${next.nm}`, true);
+  toast(`${next.ic} 邁入新時代：${next.nm}`, 'good');
+  fireworks(new THREE.Vector3(), 60);
+  for (const c of grid) {
+    if (isRoad(c)) { refreshRoad(c, true); continue; }
+    if (ZONES.includes(c.type)) c.level = Math.min(maxLv(c.type) - 1, Math.floor(c.level / Math.max(1, oldE[c.type].length - 1) * (maxLv(c.type) - 1) * 0.25));
+    if (c.type === 'resource') c.resIdx = 0;
+    if (c.type !== 'empty' && !TERRAIN.has(c.type) && c.type !== 'wonder' && c.built >= 1) placeObject(c);
+  }
+  resetAgents(); applyEraUI();
+}
+
+// ═════════════════════════ 居民與交通 ═════════════════════════
 const agents = [];
-function roadNeighbors(i, j) { const r = []; DIRS.forEach(([dx, dz], k) => { const n = C(i + dx, j + dz); if (n && n.type === 'road') r.push(k); }); return r; }
+function roadNb(i, j) { const r = []; DIRS.forEach(([dx, dz], k) => { if (isRoad(C(i + dx, j + dz))) r.push(k); }); return r; }
 function spawnAgent(kind) {
-  const roads = grid.filter(c => c.type === 'road' && roadNeighbors(c.i, c.j).length);
+  const roads = grid.filter(c => isRoad(c) && roadNb(c.i, c.j).length);
   if (!roads.length) return;
   const c = roads[Math.floor(Math.random() * roads.length)];
-  const ns = roadNeighbors(c.i, c.j);
-  const dir = ns[Math.floor(Math.random() * ns.length)];
-  const name = kind === 'car' ? CARS[Math.floor(Math.random() * CARS.length)] : PEOPLE[Math.floor(Math.random() * PEOPLE.length)];
-  const mesh = make(name);
-  if (kind === 'car') mesh.scale.setScalar(1.25); else mesh.scale.setScalar(1.6);
-  mesh.traverse(o => { if (o.isMesh) o.castShadow = true; });
-  agentsGroup.add(mesh);
-  const a = { kind, mesh, i: c.i, j: c.j, inDir: dir, outDir: dir, t: Math.random(), speed: kind === 'car' ? 0.9 + Math.random() * 0.5 : 0.18 + Math.random() * 0.08, lane: kind === 'car' ? 3.4 : 11.5, side: kind === 'car' ? 1 : (Math.random() < .5 ? 1 : -1) };
-  chooseNext(a, true);
-  agents.push(a);
+  const ns = roadNb(c.i, c.j); const dir = ns[Math.floor(Math.random() * ns.length)];
+  const list = kind === 'car' ? E.vehicles : E.people;
+  const mesh = makeAgent(list[Math.floor(Math.random() * list.length)]);
+  mesh.scale.setScalar(kind === 'car' ? E.vScale : 1.6);
+  shadows(mesh, kind === 'car'); agentsGroup.add(mesh);
+  const a = { kind, mesh, i: c.i, j: c.j, inDir: dir, outDir: dir, t: Math.random(), sp: kind === 'car' ? 0.55 + Math.random() * 0.4 : 0.14 + Math.random() * 0.07, lane: kind === 'car' ? 3.4 : 11.5, side: kind === 'car' ? 1 : (Math.random() < .5 ? 1 : -1), pause: 0 };
+  if (kind === 'car' && E.id !== 'modern') a.sp *= 0.55;
+  chooseNext(a, true); agents.push(a);
 }
 function chooseNext(a, first) {
-  const ns = roadNeighbors(a.i, a.j);
-  const back = (a.inDir + 2) % 4;
-  let opts = ns.filter(k => k !== back);
-  if (!opts.length) opts = ns.length ? ns : [back];
+  const ns = roadNb(a.i, a.j), back = (a.inDir + 2) % 4;
+  let opts = ns.filter(k => k !== back); if (!opts.length) opts = ns.length ? ns : [back];
   if (first && ns.includes(a.inDir)) { a.outDir = a.inDir; return; }
   a.outDir = opts[Math.floor(Math.random() * opts.length)];
 }
-const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpC = new THREE.Vector3();
-function lanePoint(out, i, j, edgeDir, travelDir, lane) {
-  const c = cellCenter(i, j);
-  const [ex, ez] = DIRS[edgeDir]; const [dx, dz] = DIRS[travelDir];
-  out.set(c.x + ex * T / 2 + (-dz) * lane, 0, c.z + ez * T / 2 + dx * lane);
-  return out;
-}
+const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+function lanePt(out, i, j, edge, dir, lane) { const c = cellCenter(i, j); const [ex, ez] = DIRS[edge], [dx, dz] = DIRS[dir]; return out.set(c.x + ex * T / 2 - dz * lane, 0, c.z + ez * T / 2 + dx * lane); }
 function updateAgents(dt) {
+  const sm = Math.min(speed(), 3);
   for (let n = agents.length - 1; n >= 0; n--) {
     const a = agents[n];
-    const cell = C(a.i, a.j);
-    if (!cell || cell.type !== 'road') { agentsGroup.remove(a.mesh); agents.splice(n, 1); continue; }
-    a.t += dt * a.speed * (speed || 0) * (a.kind === 'car' ? 1 : 1);
+    if (!isRoad(C(a.i, a.j))) { agentsGroup.remove(a.mesh); agents.splice(n, 1); continue; }
+    if (a.pause > 0) { a.pause -= dt * sm; continue; }
+    a.t += dt * a.sp * sm;
     if (a.t >= 1) {
       const [dx, dz] = DIRS[a.outDir];
-      const nx = C(a.i + dx, a.j + dz);
-      if (nx && nx.type === 'road') { a.i += dx; a.j += dz; a.inDir = a.outDir; }
-      else { a.inDir = a.outDir; }
-      a.t -= 1; chooseNext(a);
+      if (isRoad(C(a.i + dx, a.j + dz))) { a.i += dx; a.j += dz; }
+      a.inDir = a.outDir; a.t -= 1; chooseNext(a);
+      if (a.kind === 'man' && Math.random() < 0.15) a.pause = 1 + Math.random() * 3; // 居民停下來逛逛
     }
-    const lane = a.lane * a.side;
-    // 入口（來向的相反邊）、出口、控制點
-    const entryEdge = (a.inDir + 2) % 4;
-    lanePoint(tmpA, a.i, a.j, entryEdge, a.inDir, lane);
-    lanePoint(tmpB, a.i, a.j, a.outDir, a.outDir, lane);
-    const c = cellCenter(a.i, a.j);
-    const [ix, iz] = DIRS[a.inDir], [ox, oz] = DIRS[a.outDir];
-    tmpC.set(c.x + (-iz) * lane + (-oz) * lane, 0, c.z + ix * lane + ox * lane);
-    if (a.inDir === a.outDir) tmpC.lerpVectors(tmpA, tmpB, .5);
-    if (a.outDir === (a.inDir + 2) % 4) tmpC.set(c.x, 0, c.z);
+    const lane = a.lane * a.side, ee = (a.inDir + 2) % 4;
+    lanePt(vA, a.i, a.j, ee, a.inDir, lane); lanePt(vB, a.i, a.j, a.outDir, a.outDir, lane);
+    const c = cellCenter(a.i, a.j), [ix, iz] = DIRS[a.inDir], [ox, oz] = DIRS[a.outDir];
+    vC.set(c.x - iz * lane - oz * lane, 0, c.z + ix * lane + ox * lane);
+    if (a.inDir === a.outDir) vC.lerpVectors(vA, vB, .5);
+    if (a.outDir === (a.inDir + 2) % 4) vC.set(c.x, 0, c.z);
     const t = a.t, u = 1 - t;
-    const p = a.mesh.position;
-    const px = u * u * tmpA.x + 2 * u * t * tmpC.x + t * t * tmpB.x;
-    const pz = u * u * tmpA.z + 2 * u * t * tmpC.z + t * t * tmpB.z;
-    const tx = 2 * u * (tmpC.x - tmpA.x) + 2 * t * (tmpB.x - tmpC.x);
-    const tz = 2 * u * (tmpC.z - tmpA.z) + 2 * t * (tmpB.z - tmpC.z);
-    p.set(px, a.kind === 'man' ? Math.abs(Math.sin(a.t * 40)) * 0.25 : 0, pz);
+    const px = u * u * vA.x + 2 * u * t * vC.x + t * t * vB.x, pz = u * u * vA.z + 2 * u * t * vC.z + t * t * vB.z;
+    const tx = 2 * u * (vC.x - vA.x) + 2 * t * (vB.x - vC.x), tz = 2 * u * (vC.z - vA.z) + 2 * t * (vB.z - vC.z);
+    a.mesh.position.set(px, a.kind === 'man' ? Math.abs(Math.sin(a.t * 40)) * 0.25 : 0, pz);
     if (tx * tx + tz * tz > 1e-6) a.mesh.rotation.y = Math.atan2(tx, tz);
   }
 }
 function balanceAgents() {
-  const roads = grid.filter(c => c.type === 'road').length;
-  const wantCars = Math.min(45, Math.floor(roads / 3), Math.floor(stats.pop / 14) + (roads > 3 ? 2 : 0));
-  const wantPeople = Math.min(40, Math.floor(stats.pop / 12));
+  const roads = grid.filter(isRoad).length;
+  const wantCars = E.vehicles.length ? Math.min(40, Math.floor(roads / 3), Math.floor(stats.pop / 16)) : 0;
+  const wantPpl = Math.min(55, Math.floor(stats.pop / 7) + (roads ? 2 : 0));
   const cars = agents.filter(a => a.kind === 'car').length, ppl = agents.length - cars;
-  if (cars < wantCars) spawnAgent('car');
-  else if (cars > wantCars + 2) { const k = agents.findIndex(a => a.kind === 'car'); agentsGroup.remove(agents[k].mesh); agents.splice(k, 1); }
-  if (ppl < wantPeople) spawnAgent('man');
-  else if (ppl > wantPeople + 2) { const k = agents.findIndex(a => a.kind !== 'car'); agentsGroup.remove(agents[k].mesh); agents.splice(k, 1); }
+  if (cars < wantCars) spawnAgent('car'); else if (cars > wantCars + 2) dropAgent('car');
+  if (ppl < wantPpl) spawnAgent('man'); else if (ppl > wantPpl + 3) dropAgent('man');
 }
+function dropAgent(kind) { const k = agents.findIndex(a => a.kind === kind); if (k >= 0) { agentsGroup.remove(agents[k].mesh); agents.splice(k, 1); } }
+function resetAgents() { agents.forEach(a => agentsGroup.remove(a.mesh)); agents.length = 0; }
 
-// ───────────────────────── 地圖特效：船、海鷗、風滾草 ─────────────────────────
-const fxGroup = new THREE.Group(); scene.add(fxGroup);
+// 地圖特效：船、海鷗、風滾草
 const fx = [];
 function setupFx() {
   fxGroup.clear(); fx.length = 0;
   const water = grid.filter(c => c.type === 'water');
   const nb = M.boats || 0;
+  const boatSet = { tribal: ['boat'], egypt: ['boat'], east: ['boat-sail', 'boat'], medieval: ['boat-sail', 'boat'], western: ['boat-sail', 'boat-fishing'], modern: ['boat-sail', 'boat-fishing', 'boat-speed'] }[E.id];
   for (let k = 0; k < nb && water.length > 3; k++) {
-    const m = make(['boat-sail', 'boat-fishing', 'boat-speed', 'boat-sail', 'boat-speed'][k % 5]);
-    m.scale.setScalar(m.children[0] && k % 5 === 2 ? 1.4 : 0.9);
-    m.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const name = boatSet[k % boatSet.length];
+    const m = make(protos[name] ? name : 'boat-sail'); m.scale.setScalar(name === 'boat-speed' ? 1.4 : 0.9); shadows(m);
     const c = water[Math.floor(Math.random() * water.length)];
-    m.position.copy(cellCenter(c.i, c.j)); m.position.y = -1.5;
-    fxGroup.add(m);
-    fx.push({ kind: 'boat', m, target: null, sp: 5 + Math.random() * 6, water });
+    m.position.copy(cellCenter(c.i, c.j)); m.position.y = -1.5; fxGroup.add(m);
+    fx.push({ kind: 'boat', m, sp: 5 + Math.random() * 6, water });
   }
   if (nb) for (let k = 0; k < 6; k++) {
     const m = make('seagull'); m.scale.setScalar(3); fxGroup.add(m);
@@ -645,8 +765,7 @@ function setupFx() {
     fx.push({ kind: 'gull', m, cx: cellCenter(c.i, c.j).x, cz: cellCenter(c.i, c.j).z, r: 20 + Math.random() * 40, a: Math.random() * 6.28, h: 30 + Math.random() * 25, sp: 0.4 + Math.random() * 0.3 });
   }
   for (let k = 0; k < (M.tumbleweeds || 0); k++) {
-    const m = make('tumbleweed'); m.scale.setScalar(2.5); fxGroup.add(m);
-    m.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const m = make('tumbleweed'); m.scale.setScalar(2.5); shadows(m); fxGroup.add(m);
     m.position.set((Math.random() - .5) * N * T, 0, (Math.random() - .5) * N * T);
     fx.push({ kind: 'weed', m, sp: 8 + Math.random() * 10, ph: Math.random() * 6 });
   }
@@ -656,301 +775,276 @@ function updateFx(dt) {
   for (const f of fx) {
     if (f.kind === 'boat') {
       if (!f.target || f.m.position.distanceTo(f.target) < 4) { const c = f.water[Math.floor(Math.random() * f.water.length)]; f.target = cellCenter(c.i, c.j).add(new THREE.Vector3((Math.random() - .5) * 16, -1.5, (Math.random() - .5) * 16)); }
-      const d = f.target.clone().sub(f.m.position); d.y = 0;
-      const want = Math.atan2(d.x, d.z);
-      let diff = want - f.m.rotation.y; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      const d = f.target.clone().sub(f.m.position);
+      let diff = Math.atan2(d.x, d.z) - f.m.rotation.y; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
       f.m.rotation.y += diff * Math.min(1, dt * 1.2);
-      f.m.position.x += Math.sin(f.m.rotation.y) * f.sp * dt;
-      f.m.position.z += Math.cos(f.m.rotation.y) * f.sp * dt;
+      f.m.position.x += Math.sin(f.m.rotation.y) * f.sp * dt; f.m.position.z += Math.cos(f.m.rotation.y) * f.sp * dt;
       f.m.position.y = -1.5 + Math.sin(performance.now() / 600 + f.sp) * 0.3;
     } else if (f.kind === 'gull') {
-      f.a += dt * f.sp;
-      f.m.position.set(f.cx + Math.cos(f.a) * f.r, f.h + Math.sin(f.a * 3) * 2, f.cz + Math.sin(f.a) * f.r);
+      f.a += dt * f.sp; f.m.position.set(f.cx + Math.cos(f.a) * f.r, f.h + Math.sin(f.a * 3) * 2, f.cz + Math.sin(f.a) * f.r);
       f.m.rotation.y = -f.a; f.m.rotation.z = Math.sin(f.a * 6) * 0.3;
-    } else if (f.kind === 'weed') {
-      f.ph += dt;
-      f.m.position.x += f.sp * dt; f.m.position.z += Math.sin(f.ph * 0.7) * 3 * dt;
-      f.m.position.y = Math.abs(Math.sin(f.ph * 4)) * 2.5;
-      f.m.rotation.z -= dt * f.sp * 0.4;
+    } else {
+      f.ph += dt; f.m.position.x += f.sp * dt; f.m.position.z += Math.sin(f.ph * 0.7) * 3 * dt;
+      f.m.position.y = Math.abs(Math.sin(f.ph * 4)) * 2.5; f.m.rotation.z -= dt * f.sp * 0.4;
       if (f.m.position.x > half) { f.m.position.x = -half; f.m.position.z = (Math.random() - .5) * N * T; }
     }
   }
 }
 
-// ───────────────────────── 滑鼠／觸控 ─────────────────────────
-const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
-const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-const hover = new THREE.Mesh(new THREE.BoxGeometry(T, 1.2, T), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: .28, depthWrite: false }));
-hover.visible = false; scene.add(hover);
-const ring = new THREE.Mesh(new THREE.RingGeometry(1, 1.06, 64), new THREE.MeshBasicMaterial({ color: '#ffcf4a', transparent: true, opacity: .8, side: THREE.DoubleSide, depthWrite: false }));
-ring.rotation.x = -Math.PI / 2; ring.position.y = 0.6; ring.visible = false; scene.add(ring);
-
-function cellFromEvent(e) {
-  const r = renderer.domElement.getBoundingClientRect();
-  mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-  ray.setFromCamera(mouse, camera);
-  const p = new THREE.Vector3();
-  if (!ray.ray.intersectPlane(plane, p)) return null;
-  const i = Math.floor(p.x / T + N / 2), j = Math.floor(p.z / T + N / 2);
-  return C(i, j);
-}
-let painting = false, lastCell = null, downPos = null;
-const el = renderer.domElement;
-el.addEventListener('contextmenu', e => e.preventDefault());
-el.addEventListener('pointerdown', e => {
-  if (e.button !== 0 || tool === 'select') { downPos = [e.clientX, e.clientY]; return; }
-  painting = true; lastCell = null;
-  const c = cellFromEvent(e); if (c) { apply(c, tool); lastCell = c; updateHUD(); }
-});
-el.addEventListener('pointermove', e => {
-  const c = cellFromEvent(e);
-  updateHover(c);
-  if (painting && c && c !== lastCell && (tool === 'road' || tool === 'bulldoze' || ZONE[tool])) {
-    // 沿直線補齊中間的格子
-    if (lastCell) {
-      let { i, j } = lastCell;
-      while (i !== c.i || j !== c.j) {
-        if (i !== c.i) i += Math.sign(c.i - i); else j += Math.sign(c.j - j);
-        apply(C(i, j), tool, true);
-      }
-    } else apply(c, tool, true);
-    lastCell = c; updateHUD();
-  }
-});
-addEventListener('pointerup', e => {
-  if (downPos && tool === 'select' && e.target === el && Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) < 6) {
-    const c = cellFromEvent(e); if (c) showInfo(c);
-  }
-  painting = false; downPos = null;
-});
-function updateHover(c) {
-  if (!c) { hover.visible = false; ring.visible = false; return; }
-  hover.visible = true;
-  hover.position.copy(cellCenter(c.i, c.j)); hover.position.y = 0.6;
-  const ok = tool === 'select' || tool === 'bulldoze' ? true : c.type === 'empty';
-  hover.material.color.set(tool === 'bulldoze' ? '#ff5a5a' : ok ? '#ffffff' : '#ff5a5a');
-  const r = TOOL[tool]?.radius || (tool === 'park' ? 3 : tool === 'ind' ? 3 : 0);
-  ring.visible = !!r;
-  if (r) { ring.position.x = hover.position.x; ring.position.z = hover.position.z; ring.scale.setScalar((r + 0.5) * T); }
-}
-
-function setControls() {
-  const pan = tool === 'select';
-  controls.mouseButtons = { LEFT: pan ? THREE.MOUSE.PAN : null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
-  controls.touches = { ONE: pan ? THREE.TOUCH.PAN : null, TWO: THREE.TOUCH.DOLLY_ROTATE };
-}
-
-// ───────────────────────── UI ─────────────────────────
+// ═════════════════════════ UI ═════════════════════════
 const $ = id => document.getElementById(id);
-const tb = $('toolbar');
-for (const t of TOOLS) {
-  if (t.sep) { const s = document.createElement('div'); s.className = 'sep'; tb.appendChild(s); continue; }
-  const b = document.createElement('button');
-  b.className = 'tool'; b.dataset.tool = t.id;
-  b.innerHTML = `<span class="ic">${t.ic}</span><span class="nm">${t.nm}</span><span class="ct">${t.cost ? '$' + t.cost : '&nbsp;'}</span>`;
-  b.title = t.unlock ? `人口 ${t.unlock} 解鎖` : t.nm;
-  b.onclick = () => selectTool(t.id);
-  tb.appendChild(b);
+const fmtYear = y => y < 0 ? `西元前 ${-y} 年` : `西元 ${y} 年`;
+function log(text, big) {
+  S.log.unshift({ y: S.year, t: text, b: !!big });
+  S.log.length = Math.min(S.log.length, 60);
+  renderLog();
 }
-function selectTool(id) {
-  tool = id;
-  document.querySelectorAll('.tool').forEach(b => b.classList.toggle('on', b.dataset.tool === id));
-  setControls();
-  if (id !== 'select') $('info').classList.add('hidden');
+function renderLog() {
+  $('log').innerHTML = S.log.map(e => `<div class="ev${e.b ? ' big' : ''}"><span>${fmtYear(e.y)}</span>${e.t}</div>`).join('');
 }
-document.querySelectorAll('.speed button').forEach(b => b.onclick = () => {
-  speed = +b.dataset.speed;
-  document.querySelectorAll('.speed button').forEach(x => x.classList.toggle('on', x === b));
-});
-$('tax').oninput = e => { S.tax = +e.target.value; $('taxv').textContent = S.tax + '%'; };
-addEventListener('keydown', e => {
-  if (e.key === ' ') { e.preventDefault(); const b = document.querySelector(`.speed button[data-speed="${speed ? 0 : 1}"]`); b.click(); }
-  if (e.key === 'Escape') selectTool('select');
-  const idx = '1234567890'.indexOf(e.key); const ids = TOOLS.filter(t => t.id).map(t => t.id);
-  if (idx >= 0 && ids[idx]) selectTool(ids[idx]);
-});
-
-const fmt = n => Math.round(n).toLocaleString('en-US');
+function toast(msg, cls = '') {
+  const t = document.createElement('div'); t.className = 'toast ' + cls; t.textContent = msg;
+  $('toasts').appendChild(t); setTimeout(() => t.remove(), 3600);
+  while ($('toasts').children.length > 3) $('toasts').firstChild.remove();
+}
+function applyEraUI() {
+  $('era').innerHTML = `${E.ic} ${E.nm}${S.chronicle ? ` <small>歷史長河 ${ERAS.indexOf(E) + 1}/${ERAS.length}</small>` : ''}`;
+  $('era').style.borderColor = E.color;
+  $('s-resic').textContent = { tribal: '💧', egypt: '💧', east: '🌾', medieval: '💧', western: '💧', modern: '⚡' }[E.id];
+  $('s-resic').parentElement.title = E.names.resource + ' 使用/供應';
+}
 function updateHUD() {
-  $('s-money').textContent = '$' + fmt(S.money);
-  const d = $('s-delta'); d.textContent = (stats.income >= 0 ? '+' : '') + fmt(stats.income) + '/天'; d.classList.toggle('neg', stats.income < 0);
-  $('s-pop').textContent = fmt(stats.pop);
-  $('s-jobs').textContent = fmt(stats.jobsC + stats.jobsI);
+  $('s-year').textContent = fmtYear(S.year);
+  $('s-pop').textContent = stats.pop.toLocaleString();
+  $('s-jobs').textContent = stats.jobs.toLocaleString();
   $('s-hap').textContent = Math.round(stats.hap) + '%';
   $('s-hapicon').textContent = stats.hap > 70 ? '😄' : stats.hap > 45 ? '🙂' : stats.hap > 25 ? '😐' : '😠';
-  $('s-power').textContent = `${stats.powerUse}/${stats.powerSup}`;
-  $('s-power').style.color = stats.powerSup - stats.powerUse < 3 && grid.some(c => ZONE[c.type]) ? '#ff9b7b' : '';
-  const y = Math.floor((S.day - 1) / 360) + 1, m = Math.floor(((S.day - 1) % 360) / 30) + 1, dd = (S.day - 1) % 30 + 1;
-  $('s-date').textContent = `${y}年${m}月${dd}日`;
+  $('s-res').textContent = `${stats.use}/${stats.sup}`;
+  const p = Math.min(100, stats.pros);
+  $('pros-fill').style.width = Math.min(100, p / GOAL * 100) + '%';
+  $('pros-val').textContent = p + '%';
+  $('pros-fill').classList.toggle('done', S.done);
+  $('pros-detail').innerHTML = `開發 ${Math.round(stats.dev * 100)}%・建築等級 ${Math.round(stats.lvl * 100)}%・奇觀 ${stats.wonders}/3`;
   const bar = (id, v) => { const e = $(id); if (v >= 0) { e.style.bottom = '50%'; e.style.top = ''; e.style.height = v * 50 + '%'; } else { e.style.top = '50%'; e.style.bottom = ''; e.style.height = -v * 50 + '%'; } };
   bar('d-r', stats.dR); bar('d-c', stats.dC); bar('d-i', stats.dI);
-  const g = GOALS[S.goal];
-  $('goal').innerHTML = g ? `目標：人口達 <b>${g}</b><br>${stats.pop} / ${g}` : '<b>🏆 大都市完成！</b>';
-  document.querySelectorAll('.tool').forEach(b => { const t = TOOL[b.dataset.tool]; b.classList.toggle('locked', !!t.unlock && stats.pop < t.unlock && !(t.id === 'solar' && M.mod.solarFree)); });
-  if (infoCell) showInfo(infoCell, true);
+  if (infoCell) showInfo(infoCell);
 }
 
 let infoCell = null;
-function showInfo(c, refresh) {
+const NAMES_T = { water: '水域', mountain: '山脈', hill: '丘陵', landmark: '古代遺跡', road: '道路', empty: '荒地' };
+function showInfo(c) {
+  infoCell = c;
   const box = $('info');
-  if (!refresh) infoCell = c;
-  if (c.type === 'empty') { box.classList.add('hidden'); infoCell = null; ring.visible = false; return; }
+  if (!c || c.type === 'empty') { box.classList.add('hidden'); infoCell = null; return; }
   box.classList.remove('hidden');
-  if (TERRAIN.has(c.type)) {
-    const tip = { water: M.mod.water ? `距離 ${M.mod.water.r} 格內滿意度 +${M.mod.water.v}` : '無法建造', mountain: M.mod.mountain ? `周邊 ${M.mod.mountain.r} 格滿意度 +${M.mod.mountain.v}` : '無法建造', hill: M.mod.mountain ? `周邊 ${M.mod.mountain.r} 格滿意度 +${M.mod.mountain.v}` : '無法建造', landmark: `觀光地標：3 格內滿意度 +${tDist.landmarkV}` }[c.type];
-    box.innerHTML = `<h3>${NAMES[c.type]}</h3><div class="row">效果<b>${tip}</b></div><div class="row">建造<b>❌ 不可建造</b></div>`;
-    return;
-  }
-  const z = ZONE[c.type];
-  let h = `<h3>${NAMES[c.type]}${z ? `<span class="lv">Lv.${c.level + 1}</span>` : ''}</h3>`;
-  if (c.type === 'road') h += `<div class="row">連接方向<b>${c.mask?.toString(2).padStart(4, '0')}</b></div>`;
+  let h;
+  if (c.type === 'wonder') {
+    const era = ERAS.find(e => e.id === c.wEra);
+    h = `<h3>🏛️ ${era.wonders[c.wIdx].nm}</h3><div class="row">時代<b>${era.ic} ${era.nm}</b></div><div class="row">狀態<b>${(c.group?.[0] || c).built < 1 ? '🏗️ 建造中 ' + Math.floor((c.group?.[0] || c).built * 100) + '%' : '✨ 已完工'}</b></div><div class="row">效果<b>周邊 4 格滿意度 +8</b></div>`;
+  } else if (TERRAIN.has(c.type) || c.type === 'road') h = `<h3>${NAMES_T[c.type]}</h3>`;
   else {
-    if (c.built < 1) h += `<div class="row">狀態<b>🏗️ 施工中 ${Math.floor(c.built * 100)}%</b></div>`;
-    if (z) h += `<div class="row">${c.type === 'res' ? '居民' : '工作機會'}<b>${z.val[c.level]}</b></div>`;
-    if (c.type !== 'park') h += `<div class="row">道路<b>${c.road ? '✅ 已連接' : '❌ 未連接'}</b></div>`;
-    if (z || TOOL[c.type].power < 0) h += `<div class="row">電力<b>${c.powered ? '✅ 有電' : '⚡ 停電'}</b></div>`;
-    if (TOOL[c.type]?.power > 0) h += `<div class="row">發電量<b>${TOOL[c.type].power}</b></div>`;
-    if (TOOL[c.type]?.upkeep) h += `<div class="row">維護費<b>$${TOOL[c.type].upkeep}/天</b></div>`;
-    if (z) {
-      h += `<div class="row">滿意度<b>${Math.round(c.hap)}%</b></div>`;
-      if (c.level < z.levels.length - 1) h += `<div class="row">升級需求<b>滿意度 ${38 + c.level * 9}%</b></div>`;
-      else h += `<div class="row">等級<b>⭐ 最高級</b></div>`;
-    }
+    const nm = E.names[c.type];
+    const z = ZONES.includes(c.type);
+    h = `<h3>${nm}${z ? `<span class="lv">Lv.${c.level + 1}/${maxLv(c.type)}</span>` : ''}</h3>`;
+    if (c.built < 1) h += `<div class="row">狀態<b>🏗️ 建造中 ${Math.floor(c.built * 100)}%</b></div>`;
+    if (z) h += `<div class="row">${c.type === 'res' ? '居民' : '工作'}<b>${zoneVal(c.type, c.level)}</b></div><div class="row">滿意度<b>${Math.round(c.hap)}%</b></div>`;
+    if (c.type === 'resource') h += `<div class="row">供應量<b>${resourcePower(c)}</b></div>`;
+    if (z || SRV[c.type]) h += `<div class="row">${E.names.resource}<b>${c.powered ? '✅ 充足' : '❌ 不足'}</b></div>`;
+    if (SRV[c.type]) h += `<div class="row">服務範圍<b>${SRV[c.type].radius} 格</b></div>`;
   }
   box.innerHTML = h;
 }
 
-function toast(msg, cls = '') {
-  const t = document.createElement('div'); t.className = 'toast ' + cls; t.textContent = msg;
-  $('toasts').appendChild(t); setTimeout(() => t.remove(), 3100);
-  while ($('toasts').children.length > 4) $('toasts').firstChild.remove();
+// 點擊選取
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const hover = new THREE.Mesh(new THREE.BoxGeometry(T, 1.2, T), new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: .25, depthWrite: false }));
+hover.visible = false; scene.add(hover);
+function cellAt(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const p = new THREE.Vector3(); if (!ray.ray.intersectPlane(plane, p)) return null;
+  return C(Math.floor(p.x / T + N / 2), Math.floor(p.z / T + N / 2));
+}
+let down = null;
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointermove', e => { const c = cellAt(e); hover.visible = !!c; if (c) { hover.position.copy(cellCenter(c.i, c.j)); hover.position.y = 0.6; } });
+renderer.domElement.addEventListener('pointerup', e => { if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 6) showInfo(cellAt(e)); down = null; });
+
+// 速度
+const spBox = $('speeds');
+SPEEDS.forEach((s, k) => { const b = document.createElement('button'); b.textContent = s ? s + '×' : '⏸'; b.onclick = () => setSpeed(k); spBox.appendChild(b); });
+function setSpeed(k) { speedIdx = k; [...spBox.children].forEach((b, i) => b.classList.toggle('on', i === k)); }
+setSpeed(1);
+$('orbit').onclick = () => { controls.autoRotate = !controls.autoRotate; $('orbit').classList.toggle('on', controls.autoRotate); };
+addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); setSpeed(speedIdx ? 0 : 1); }
+  if (e.key >= '1' && e.key <= '5') setSpeed(+e.key);
+  if (e.key === 'r' || e.key === 'R') $('orbit').click();
+});
+$('menuBtn').onclick = () => { save(); showLevels(); };
+$('logToggle').onclick = () => $('side').classList.toggle('collapsed');
+
+function showVictory() {
+  setSpeed(1);
+  $('victory').innerHTML = `<div class="panel"><div class="big">🏆</div><h2>極致繁榮！</h2>
+    <p>${M.ic} ${M.nm}的${E.ic} ${E.nm}文明，在 ${fmtYear(S.year)} 達到了巔峰。</p>
+    <div class="vstats"><div><b>${stats.pop}</b>人口</div><div><b>${S.years}</b>回合</div><div><b>${stats.wonders}</b>奇觀</div><div><b>${Math.round(stats.hap)}%</b>滿意度</div></div>
+    <div class="btns"><button id="vCont">繼續觀看</button><button id="vMenu" class="ghost">選擇其他地圖／時代</button></div></div>`;
+  $('victory').classList.remove('hidden');
+  $('vCont').onclick = () => $('victory').classList.add('hidden');
+  $('vMenu').onclick = () => { $('victory').classList.add('hidden'); save(); showLevels(); };
 }
 
-// 選單
-$('menuBtn').onclick = () => $('menu').classList.remove('hidden');
-$('btnResume').onclick = () => $('menu').classList.add('hidden');
-$('btnSave').onclick = () => { save(); $('menu').classList.add('hidden'); };
-$('btnNew').onclick = () => { if (confirm('確定要重新開始這張地圖嗎？目前的城市會被清除。')) { localStorage.removeItem(SAVE_KEY + S.map); startGame(newState(S.map)); $('menu').classList.add('hidden'); } };
-$('btnMaps').onclick = () => { save(true); $('menu').classList.add('hidden'); showLevels(); };
+// 關卡選擇
+let pickEra = 'chronicle';
 function showLevels() {
+  const eraBox = $('eraList'); eraBox.innerHTML = '';
+  for (const e of [CHRONICLE, ...ERAS]) {
+    const b = document.createElement('button'); b.className = 'erachip' + (pickEra === e.id ? ' on' : '');
+    b.innerHTML = `<span>${e.ic}</span>${e.nm}`; b.title = e.desc;
+    b.onclick = () => { pickEra = e.id; showLevels(); };
+    eraBox.appendChild(b);
+  }
+  const eraDef = pickEra === 'chronicle' ? CHRONICLE : ERAS.find(e => e.id === pickEra);
+  $('eraDesc').innerHTML = `<b>${eraDef.ic} ${eraDef.nm}</b>　${eraDef.desc}`;
   const box = $('levelList'); box.innerHTML = '';
   for (const m of MAPS) {
-    const sv = load(m.id);
+    const sv = load(m.id, pickEra);
     const card = document.createElement('div'); card.className = 'lvcard'; card.style.setProperty('--sky', m.sky);
-    card.innerHTML = `<div class="lvhead"><span class="lvic">${m.ic}</span><div><b>${m.nm}</b><small>難度 ${m.diff}・起始資金 $${m.money.toLocaleString()}</small></div></div>
+    card.innerHTML = `<div class="lvhead"><span class="lvic">${m.ic}</span><div><b>${m.nm}</b><small>難度 ${m.diff}</small></div></div>
       <p>${m.desc}</p><ul>${m.rules.map(r => `<li>${r}</li>`).join('')}</ul>
-      <div class="lvbtns">${sv ? `<button data-act="cont">▶ 繼續（第${sv.day}天・人口 ${sv.pop || 0}）</button><button data-act="new" class="ghost">重新開始</button>` : `<button data-act="new">開始建設</button>`}</div>`;
+      <div class="lvbtns">${sv ? `<button data-act="cont">▶ 繼續觀看<small>${fmtYear(sv.year)}${sv.done ? '・🏆' : ''}</small></button><button data-act="new" class="ghost">重來</button>` : `<button data-act="new">開始觀察文明</button>`}</div>`;
     card.querySelectorAll('button').forEach(b => b.onclick = () => {
-      if (b.dataset.act === 'new' && sv && !confirm(`重新開始「${m.nm}」？原本的存檔會被覆蓋。`)) return;
+      if (b.dataset.act === 'new' && sv && !confirm('重新開始？原本的進度會被覆蓋。')) return;
       $('levels').classList.add('hidden');
-      startGame(b.dataset.act === 'cont' ? sv : newState(m.id));
-      if (b.dataset.act === 'new') toast(`${m.ic} ${m.nm}：${m.rules[0]}`, '');
+      startGame(b.dataset.act === 'cont' ? sv : newState(m.id, pickEra));
     });
     box.appendChild(card);
   }
   $('levels').classList.remove('hidden');
 }
 
-// ───────────────────────── 存讀檔 ─────────────────────────
-function save(quiet) {
-  if (!S) return;
-  S.pop = stats.pop;
-  S.cells = grid.map(c => c.type === 'empty' ? (c.trees ? 1 : 0) : TERRAIN.has(c.type) ? 0 : [c.type, c.level, +c.built.toFixed(2)]);
-  try { localStorage.setItem(SAVE_KEY + S.map, JSON.stringify(S)); localStorage.setItem(SAVE_KEY + 'last', S.map); if (!quiet) toast('💾 已存檔', 'good'); } catch { }
+// ═════════════════════════ 存讀檔 ═════════════════════════
+const slot = (mapId, eraId) => SAVE_KEY + mapId + '-' + eraId;
+function save() {
+  if (!S || !grid.length) return;
+  S.cells = grid.map(c => {
+    if (c.type === 'empty') return c.trees ? 1 : 0;
+    if (TERRAIN.has(c.type)) return 0;
+    if (c.type === 'wonder') return ['wonder', 0, +c.built.toFixed(2), c.wEra, c.wIdx, c.wSpan, c.group.map(g => g.j * N + g.i).join(','), c.anchor ? 1 : 0];
+    return [c.type, c.level, +c.built.toFixed(2), c.resIdx ?? null];
+  });
+  try { localStorage.setItem(slot(S.map, S.chronicle ? 'chronicle' : S.era), JSON.stringify(S)); localStorage.setItem(SAVE_KEY + 'last', slot(S.map, S.chronicle ? 'chronicle' : S.era)); } catch { }
 }
-function load(id) { try { return JSON.parse(localStorage.getItem(SAVE_KEY + id)); } catch { return null; } }
-addEventListener('beforeunload', () => save(true));
+function load(mapId, eraId) { try { return JSON.parse(localStorage.getItem(slot(mapId, eraId))); } catch { return null; } }
+addEventListener('beforeunload', save);
+setInterval(save, 15000);
 
 function startGame(state) {
-  S = state; S.map = S.map || 'grass'; M = MAP(S.map);
-  infoCell = null; $('info').classList.add('hidden');
-  stats.pop = 0;
-  agents.forEach(a => agentsGroup.remove(a.mesh)); agents.length = 0;
-  buildBoard();
-  setupFx();
-  if (S.cells?.length === N * N) {
+  S = state; M = MAPS.find(m => m.id === S.map) || MAPS[0]; E = ERAS.find(e => e.id === S.era) || ERAS[0];
+  rand = rng(S.seed + 7);
+  resetAgents(); showInfo(null); $('victory').classList.add('hidden');
+  buildBoard(); setupFx();
+  if (S.cells) {
+    const groups = [];
     grid.forEach((c, k) => {
       const v = S.cells[k];
       if (TERRAIN.has(c.type)) return;
-      if (v === 0) clearTrees(c);
-      else if (v === 1) { if (!c.trees) addTrees(c); }
-      else if (Array.isArray(v)) { clearTrees(c); c.type = v[0]; c.level = v[1]; c.built = v[2]; }
+      if (v === 0) clearDecor(c);
+      else if (v === 1) { if (!c.trees) addDecor(c); }
+      else if (Array.isArray(v)) {
+        clearDecor(c); c.type = v[0]; c.level = v[1]; c.built = v[2];
+        if (v[0] === 'wonder') { c.wEra = v[3]; c.wIdx = v[4]; c.wSpan = v[5]; c.anchor = !!v[7]; c._g = v[6]; if (c.anchor) groups.push(c); }
+        else if (v[3] !== null && v[3] !== undefined) c.resIdx = v[3];
+      }
     });
-    grid.forEach(c => { if (c.type === 'road') { c.mask = -1; refreshRoad(c); } });
-    grid.forEach(c => {
-      if (c.type === 'park') setBase(c, 'tile-park', 0);
-      if (c.type !== 'empty' && c.type !== 'road' && !TERRAIN.has(c.type)) { if (c.built >= 1) placeObject(c, false); else addCrane(c); }
-    });
-  } else {
-    seedStarter();
-  }
-  $('tax').value = S.tax; $('taxv').textContent = S.tax + '%';
-  simulateDay(); S.day--;
-  updateHUD();
-}
-// 新遊戲：預先鋪一條主幹道
-function seedStarter() {
-  for (const [i0, j0, i1, j1] of M.roads) {
-    let i = i0, j = j0;
-    while (true) {
-      const c = C(i, j);
-      if (c && (c.type === 'empty' || c.type === 'road')) { clearTrees(c); c.type = 'road'; }
-      if (i === i1 && j === j1) break;
-      i += Math.sign(i1 - i); j += Math.sign(j1 - j);
+    for (const a of groups) {
+      const cells = a._g.split(',').map(Number).map(k => grid[k]);
+      const ctr = cells.reduce((v, c) => v.add(cellCenter(c.i, c.j)), new THREE.Vector3()).multiplyScalar(1 / cells.length);
+      cells.forEach(c => { c.group = cells; c.wonderCenter = ctr; });
     }
-  }
-  grid.forEach(c => { if (c.type === 'road') { c.mask = -1; refreshRoad(c); } });
-  const w = C(...M.windmill); if (w && w.type === 'empty') { clearTrees(w); w.type = 'power'; w.built = 1; placeObject(w, false); }
-  // 鏡頭重設
-  camera.position.set(260, 300, 330); controls.target.set(0, 0, 0);
+    grid.forEach(c => { if (isRoad(c)) { c.mask = -1; refreshRoad(c); } });
+    grid.forEach(c => {
+      if (c.type === 'park' && E.park === 'tile') setBase(c, 'tile-park', 0);
+      if (c.type === 'empty' || c.type === 'road' || TERRAIN.has(c.type)) return;
+      if (c.type === 'wonder' && !c.anchor) return;
+      if (c.built >= 1) placeObject(c, false); else addConstruction(c);
+    });
+  } else seedSettlement();
+  camera.position.set(200, 260, 290); controls.target.copy(cellCenter(...M.center)).multiplyScalar(0.5);
+  applyEraUI(); renderLog();
+  simulate(); updateHUD();
+  yearAcc = 0;
+}
+function seedSettlement() {
+  const o = C(...M.center);
+  // 在中心附近找一塊可用的起點
+  let start = o;
+  if (!start || TERRAIN.has(start.type)) start = grid.filter(c => !TERRAIN.has(c.type)).sort((a, b) => cheb(a, o) - cheb(b, o))[0];
+  M.center = [start.i, start.j];
+  buildAt(start, 'road');
+  extendRoads(4);
+  log(`${E.ic} 第一批先民來到${M.nm}，在此定居`, true);
 }
 
-// ───────────────────────── 主迴圈 ─────────────────────────
+// ═════════════════════════ 主迴圈 ═════════════════════════
 const clock = new THREE.Clock();
-let agentTimer = 0, cycle = 0;
+let agentTimer = 0;
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.1);
-  const sdt = dt * speed;
-  if (speed > 0) {
-    dayAcc += sdt;
-    while (dayAcc >= DAY_SEC) { dayAcc -= DAY_SEC; simulateDay(); }
+  const sp = speed(), sdt = dt * sp;
+  if (S && sp > 0) {
+    yearAcc += sdt;
+    let guard = 0;
+    while (yearAcc >= YEAR_SEC && guard++ < 4) {
+      yearAcc -= YEAR_SEC;
+      S.years++; S.year += E.step;
+      if (S.year === 0) S.year = 1;
+      simulate(); aiTurn();
+    }
+    if (guard) updateHUD();
   }
-  // 施工
   for (const c of grid) {
-    if (c.built < 1 && c.type !== 'empty') {
-      c.built = Math.min(1, c.built + sdt / 3.5);
-      if (c.built >= 1) { removeCrane(c); placeObject(c); }
+    if (c.built < 1 && c.type !== 'empty' && !TERRAIN.has(c.type) && !(c.type === 'wonder' && !c.anchor)) {
+      c.built = Math.min(1, c.built + sdt / (c.type === 'wonder' ? 12 : 3));
+      if (c.built >= 1) {
+        removeConstruction(c); placeObject(c);
+        if (c.type === 'wonder') { const w = ERAS.find(e => e.id === c.wEra).wonders[c.wIdx]; log(`🏛️ 奇觀「${w.nm}」落成！`, true); toast(`🏛️ 奇觀「${w.nm}」落成！`, 'good'); fireworks(c.wonderCenter, 60); }
+      }
     }
     if (c.obj && c.anim !== undefined && c.anim < 1) {
       c.anim = Math.min(1, c.anim + dt * 2.2);
+      if (c.anim >= 1) dirty(c); // 動畫結束後併入區塊
       const k = c.anim, e = 1 + 2.2 * Math.pow(k - 1, 3) + 1.2 * Math.pow(k - 1, 2);
-      c.obj.scale.y = c.obj.userData.baseScale * Math.max(0.001, e);
+      c.obj.scale.y = Math.max(0.001, e);
     }
-    if (c.obj?.userData.prop && speed > 0) c.obj.userData.prop.rotation.z += dt * 2.5 * speed;
+    if (c.obj?.userData.prop && sp > 0) c.obj.userData.prop.rotation.z += dt * 2.5;
   }
   for (let k = dusts.length - 1; k >= 0; k--) {
-    const d = dusts[k]; d.userData.life -= dt * 1.2;
-    d.position.addScaledVector(d.userData.v, dt); d.userData.v.multiplyScalar(0.94);
-    d.scale.setScalar(2 + (1 - d.userData.life) * 4); d.material.opacity = Math.max(0, d.userData.life * .7);
-    if (d.userData.life <= 0) { scene.remove(d); dusts.splice(k, 1); }
+    const d = dusts[k], u = d.userData;
+    u.life -= dt * (u.kind === 'fw' ? 0.7 : 1.2);
+    d.position.addScaledVector(u.v, dt);
+    if (u.kind === 'fw') { u.v.y -= 12 * dt; u.v.multiplyScalar(0.98); d.material.opacity = Math.max(0, Math.min(1, u.life)); }
+    else { u.v.multiplyScalar(0.94); d.scale.setScalar(2 + (1 - u.life) * 4); d.material.opacity = Math.max(0, u.life * .7); }
+    if (u.life <= 0) { scene.remove(d); d.material.dispose(); dusts.splice(k, 1); }
   }
-  agentTimer += dt; if (agentTimer > 0.4) { agentTimer = 0; balanceAgents(); }
-  updateAgents(dt);
-  updateFx(dt);
+  bakeDirty(4);
+  agentTimer += dt; if (agentTimer > 0.3) { agentTimer = 0; balanceAgents(); }
+  updateAgents(dt); updateFx(dt);
 
-  // 晝夜（一年＝4個晝夜循環太快，改為每 24 天一輪）
-  cycle = ((S.day + dayAcc / DAY_SEC) % 24) / 24;
-  const sunA = cycle * Math.PI * 2;
-  const daylight = Math.max(0, Math.sin(sunA)) ;
-  const lightK = 0.35 + 0.65 * Math.min(1, daylight * 2.2);
-  sun.intensity = 2.4 * lightK; hemi.intensity = 0.5 + 0.7 * lightK;
-  sun.position.set(Math.cos(sunA) * 300, 120 + 300 * daylight, 160);
+  // 晝夜：每 12 回合一個循環
+  const cyc = S ? ((S.years + yearAcc / YEAR_SEC) % 12) / 12 : 0.25;
+  const a = cyc * Math.PI * 2, day = Math.max(0, Math.sin(a));
+  const lk = 0.4 + 0.6 * Math.min(1, day * 2.2);
+  sun.intensity = 2.4 * lk; hemi.intensity = 0.55 + 0.65 * lk;
+  sun.position.set(Math.cos(a) * 300, 120 + 300 * day, 160);
   const sky = scene.background;
-  if (daylight > 0.25) sky.copy(SKY_DAY); else if (daylight > 0) sky.copy(SKY_DUSK).lerp(SKY_DAY, daylight / 0.25); else sky.copy(SKY_NIGHT).lerp(SKY_DUSK, Math.max(0, 1 + Math.sin(sunA) * 4));
+  if (day > 0.25) sky.copy(SKY_DAY); else if (day > 0) sky.copy(SKY_DUSK).lerp(SKY_DAY, day / 0.25); else sky.copy(SKY_NIGHT).lerp(SKY_DUSK, Math.max(0, 1 + Math.sin(a) * 4));
   scene.fog.color.copy(sky);
 
   controls.update();
-  // 限制鏡頭目標在地圖內
   const lim = N * T / 2;
   controls.target.x = Math.max(-lim, Math.min(lim, controls.target.x));
   controls.target.z = Math.max(-lim, Math.min(lim, controls.target.z));
@@ -958,31 +1052,24 @@ function tick() {
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
-
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
-// ───────────────────────── 載入 ─────────────────────────
-new GLTFLoader().load('models/town.glb', gltf => {
-  const root = gltf.scene;
-  root.updateMatrixWorld(true);
-  for (const o of [...root.children]) {
-    const box = new THREE.Box3().setFromObject(o);
-    const size = new THREE.Vector3(); box.getSize(size);
-    o.userData.size = size;
-    protos[o.name] = o;
-  }
-  root.traverse(o => {
-    if (o.isMesh) {
-      const ms = Array.isArray(o.material) ? o.material : [o.material];
-      ms.forEach(m => { if (m.transparent) { m.depthWrite = false; } m.envMapIntensity = 0; });
-    }
-  });
+// ═════════════════════════ 載入 ═════════════════════════
+const loader = new GLTFLoader(); loader.setMeshoptDecoder(MeshoptDecoder);
+loader.load('models/town.glb', gltf => {
+  const root = gltf.scene; root.updateMatrixWorld(true);
+  for (const o of [...root.children]) { const b = new THREE.Box3().setFromObject(o); const s = new THREE.Vector3(); b.getSize(s); o.userData.size = s; protos[o.name] = o; }
+  root.traverse(o => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { if (m.transparent) m.depthWrite = false; }); });
   $('loading').classList.add('hidden');
-  setControls(); selectTool('select');
   let last = null; try { last = localStorage.getItem(SAVE_KEY + 'last'); } catch { }
-  startGame((last && load(last)) || newState('grass'));
+  let st = null; try { st = last && JSON.parse(localStorage.getItem(last)); } catch { }
+  startGame(st || newState('grass', 'chronicle'));
   showLevels();
   tick();
 }, p => { if (p.total) $('loadbar').style.width = (p.loaded / p.total * 100) + '%'; }, err => { $('loadtxt').textContent = '模型載入失敗：' + err.message; });
 
-window.__game = { start: id => { document.getElementById('levels').classList.add('hidden'); startGame(newState(id)); }, get S() { return S; }, get grid() { return grid; }, apply: (i, j, t) => apply(C(i, j), t), simulateDay, protos, camera, controls, setSpeed: s => speed = s };
+window.__game = {
+  start: (m, e) => { $('levels').classList.add('hidden'); startGame(newState(m, e)); },
+  run: n => { for (let k = 0; k < n; k++) { S.years++; S.year += E.step; simulate(); aiTurn(); grid.forEach(c => { if (c.built < 1 && c.type !== 'empty') c.built = Math.min(1, c.built + 0.34); if (c.built >= 1 && c.crane) { removeConstruction(c); placeObject(c, false); } }); } grid.forEach(c => { if (c.obj && c.anim < 1) { c.anim = 1; c.obj.scale.y = 1; } }); bakeDirty(99); updateHUD(); },
+  get info() { let n = 0; scene.traverse(o => { if (o.isMesh) n++; }); const vis = g => { let k = 0; g.traverseVisible(o => { if (o.isMesh) k++; }); return k; }; return { meshes: n, calls: renderer.info.render.calls, world: vis(world), baked: vis(bakedGroup), agents: vis(agentsGroup), fx: vis(fxGroup), dirty: chunks.filter(c => c.dirty).length, other: scene.children.length }; }, get S() { return S; }, get stats() { return stats; }, get grid() { return grid; }, camera, controls, setSpeed,
+};
