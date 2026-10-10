@@ -80,3 +80,19 @@ button{font:inherit;color:inherit;cursor:pointer}
   #info{top:auto;bottom:96px;left:6px;width:190px}
   .tool{width:56px}
 }
+
+#levels{position:fixed;inset:0;z-index:40;background:linear-gradient(160deg,rgba(18,26,40,.92),rgba(30,44,66,.88));overflow-y:auto;padding:24px 16px}
+.lvwrap{max-width:1100px;margin:0 auto}
+#levels h1{margin:0 0 16px;font-size:26px}
+#levels h1 span{font-size:14px;font-weight:400;color:var(--mut);margin-left:8px}
+#levelList{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.lvcard{background:#1f2738;border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;border-top:6px solid var(--sky)}
+.lvhead{display:flex;gap:10px;align-items:center}
+.lvic{font-size:36px}
+.lvhead b{display:block;font-size:18px}
+.lvhead small{color:var(--mut);font-size:12px}
+.lvcard p{font-size:13px;color:#c9d2e0;line-height:1.55;margin:10px 0 6px}
+.lvcard ul{margin:0 0 12px;padding-left:4px;list-style:none;font-size:12.5px;color:#dfe6f0;line-height:1.7;flex:1}
+.lvbtns{display:flex;gap:6px}
+.lvbtns button{flex:1;background:var(--acc);color:#222;border:0;border-radius:10px;padding:9px 6px;font-weight:700;font-size:13px}
+.lvbtns button.ghost{flex:0 0 auto;background:#33405a;color:#dfe6f0}

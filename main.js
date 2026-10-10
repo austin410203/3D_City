@@ -6,7 +6,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const N = 16;            // 網格大小
 const T = 30;            // 每格寬度（Blender tile 為 30m）
 const DAY_SEC = 1.6;     // 1x 速度下一天的秒數
-const SAVE_KEY = 'tinytown-save-v1';
+const SAVE_KEY = 'tinytown-save-v2-';
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N E S W（-Z 為北）
 const BIT = [1, 2, 4, 8];
 
@@ -43,8 +43,91 @@ const TOOLS = [
   { id: 'bulldoze', ic: '🚜', nm: '拆除', cost: 5 },
 ];
 const TOOL = Object.fromEntries(TOOLS.filter(t => t.id).map(t => [t.id, t]));
-const NAMES = { road: '道路', res: '住宅區', com: '商業區', ind: '工業區', power: '風力發電', solar: '太陽能電廠', park: '公園', police: '警察局', fire: '消防局', school: '學校', hospital: '醫院' };
+const NAMES = { road: '道路', res: '住宅區', com: '商業區', ind: '工業區', power: '風力發電', solar: '太陽能電廠', park: '公園', police: '警察局', fire: '消防局', school: '學校', hospital: '醫院', water: '水域', mountain: '山脈', hill: '丘陵', landmark: '金字塔遺跡' };
 const GOALS = [40, 120, 250, 500, 1000, 2000];
+
+// ───────────────────────── 地圖關卡 ─────────────────────────
+const TERRAIN = new Set(['water', 'mountain', 'hill', 'landmark']);
+const dist = (i, j, x, y) => Math.hypot(i - x, j - y);
+const MAPS = [
+  {
+    id: 'grass', ic: '🌾', nm: '綠野平原', diff: '★☆☆', money: 5000,
+    desc: '一望無際的草原與農場。地形平坦、空間充足，最適合新手。',
+    rules: ['🐄 田園風光：附近有樹林的住宅滿意度更高'],
+    sky: '#9fd3f0', sea: '#4fa7c9',
+    terrain: () => null,
+    features: [],
+    decor: { rate: 0.3, sets: [['tree-round', 'tree-lime', 'tree-oak', 'tree-simple', 'tree-lime_red', 'shrub-round', 'shrub-flowers'], ['cow', 'cow', 'horse', 'haystack', 'hay-pile', 'grass-tall'], ['sunflower', 'sunflower', 'sunflower', 'scarecrow', 'grass-tall']], weights: [0.65, 0.2, 0.15] },
+    roads: [[2, 8, 13, 8, 'h'], [7, 5, 7, 11, 'v']],
+    windmill: [5, 7],
+    mod: { treeBonus: 3 },
+  },
+  {
+    id: 'coast', ic: '🌊', nm: '蔚藍海灣', diff: '★★☆', money: 5000,
+    desc: '依海而建的港灣小鎮，海岸線切割出不規則的土地，帆船在海上航行。',
+    rules: ['🏖️ 海景：距海 2 格內的建築滿意度 +14', '🌬️ 海風強勁：風車發電 +25%'],
+    sky: '#8fd0f2', sea: '#3f9fd0',
+    terrain(i, j) { const k = i * 0.75 + j + Math.sin(i * 0.9) * 1.3; return k > 18.5 ? 'water' : null; },
+    features: [{ model: 'lighthouse', cells: [[12, 7]], scale: 1.6 }],
+    decor: { rate: 0.28, sets: [['palm', 'palm-big', 'palm-round', 'palm-angle', 'palm-small'], ['tree-round', 'tree-lime', 'shrub-round', 'shrub-flowers']], weights: [0.5, 0.5] },
+    roads: [[1, 5, 11, 5, 'h'], [5, 2, 5, 11, 'v']],
+    windmill: [3, 4],
+    boats: 5,
+    mod: { water: { r: 2, v: 14 }, windMul: 1.25 },
+  },
+  {
+    id: 'mountain', ic: '⛰️', nm: '群山峽谷', diff: '★★☆', money: 5500,
+    desc: '高山環繞的峽谷，可用土地被山脈與丘陵切割，森林茂密、野生動物出沒。',
+    rules: ['🏔️ 山景：距山 2 格內滿意度 +8', '🌬️ 山谷風口：風車發電 +50%', '🚧 地形破碎，規劃道路要更用心'],
+    sky: '#a9d6ea', sea: '#4b8fb0',
+    terrain(i, j) { const hills = ['3,3', '11,4', '4,10', '9,11', '13,9', '2,6', '10,2']; return hills.includes(i + ',' + j) ? 'hill' : null; },
+    features: [
+      { model: 'terrain-mountains', cells: [[0, 0], [1, 0], [0, 1], [1, 1]] },
+      { model: 'terrain-mountains', cells: [[14, 0], [15, 0], [14, 1], [15, 1]], rot: Math.PI / 2 },
+      { model: 'mountains', cells: [[5, 14], [6, 14], [7, 14], [5, 15], [6, 15], [7, 15]], rot: Math.PI },
+      { model: 'terrain-mountains', cells: [[13, 13], [14, 13], [13, 14], [14, 14]], rot: Math.PI },
+      { model: 'terrain-mountains', cells: [[0, 13], [1, 13], [0, 14], [1, 14]], rot: -Math.PI / 2 },
+      { model: 'mountains', cells: [[6, 0], [7, 0], [8, 0], [6, 1], [7, 1], [8, 1]] },
+    ],
+    decor: { rate: 0.45, sets: [['tree-fir', 'tree-conifer', 'tree-spruce', 'tree-forest', 'tree-birch'], ['deer', 'bear', 'wolf', 'rock-sharp', 'stone-round']], weights: [0.85, 0.15] },
+    roads: [[0, 7, 15, 7, 'h'], [8, 3, 8, 12, 'v']],
+    windmill: [6, 6],
+    mod: { mountain: { r: 2, v: 8 }, windMul: 1.5 },
+  },
+  {
+    id: 'desert', ic: '🏜️', nm: '黃沙荒漠', diff: '★★★', money: 6500,
+    desc: '炎熱乾燥的沙漠，只有仙人掌與風滾草。金字塔遺跡帶來觀光客。',
+    rules: ['🥵 缺水酷熱：所有建築滿意度 -12，公園 3 格內可抵消', '☀️ 日照充足：太陽能發電 +60%，且一開始就能建造', '🔺 金字塔觀光：附近滿意度 +10'],
+    sky: '#f3d9a4', sea: '#c9a66b', sand: '#dcb978',
+    terrain: () => null,
+    features: [
+      { model: 'pyramid', cells: [[11, 2], [12, 2], [11, 3], [12, 3]], landmark: 10 },
+      { model: 'mountain-desert', cells: [[1, 1], [2, 1], [1, 2], [2, 2]] },
+      { model: 'mountain-desert', cells: [[12, 12], [13, 12], [12, 13], [13, 13]], rot: Math.PI },
+    ],
+    decor: { rate: 0.3, sets: [['cactus-basic', 'cactus-big', 'cactus-medium', 'cactus-basic'], ['rock-pillar', 'rock-sharp', 'stone-flat', 'rocks-small'], ['tree-dry', 'tree-dead', 'tumbleweed']], weights: [0.55, 0.3, 0.15] },
+    roads: [[1, 8, 14, 8, 'h'], [6, 4, 6, 12, 'v']],
+    windmill: [4, 7],
+    tumbleweeds: 8,
+    mod: { dry: { v: 12, r: 3 }, solarMul: 1.6, solarFree: true },
+  },
+  {
+    id: 'oasis', ic: '🌴', nm: '沙漠綠洲', diff: '★★☆', money: 5500,
+    desc: '沙漠中央的一汪清泉，棕櫚樹環繞。越靠近水源越宜居，越遠越荒涼。',
+    rules: ['💧 綠洲水源：距水 3 格內滿意度 +16', '🏜️ 遠離水源（6 格外）滿意度 -10', '☀️ 太陽能發電 +30%'],
+    sky: '#f0dcae', sea: '#c9a66b', sand: '#dcb978',
+    terrain(i, j) { return dist(i, j, 7.5, 7.2) < 2.1 + Math.sin(i * 2 + j) * 0.35 ? 'water' : null; },
+    features: [],
+    decor: {
+      rate: 0.32, sets: [['palm', 'palm-big', 'palm-round', 'palm-angle'], ['cactus-basic', 'cactus-big', 'cactus-medium', 'tumbleweed', 'rocks-small']], weights: [1, 0],
+      pick: (i, j) => dist(i, j, 7.5, 7.2) < 4.5 ? 0 : 1,
+    },
+    roads: [[3, 3, 12, 3, 'h'], [12, 3, 12, 12, 'v'], [3, 3, 3, 11, 'v']],
+    windmill: [4, 2],
+    mod: { water: { r: 3, v: 16 }, far: { r: 6, v: 10 }, solarMul: 1.3, solarFree: true },
+  },
+];
+const MAP = id => MAPS.find(m => m.id === id) || MAPS[0];
 
 // ───────────────────────── 場景 ─────────────────────────
 const app = document.getElementById('app');
@@ -116,23 +199,77 @@ let stats = { pop: 0, jobsC: 0, jobsI: 0, powerUse: 0, powerSup: 0, hap: 50, dR:
 let hapMap = new Float32Array(N * N);
 let speed = 1, tool = 'select', dayAcc = 0;
 
-function newState() {
-  return { money: 5000, day: 1, tax: 9, goal: 0, cells: [], seed: Math.floor(Math.random() * 1e9) };
+let M = MAPS[0]; // 目前地圖
+function newState(mapId = 'grass') {
+  const m = MAP(mapId);
+  return { map: m.id, money: m.money, day: 1, tax: 9, goal: 0, cells: [], seed: Math.floor(Math.random() * 1e9) };
 }
 
 // ───────────────────────── 建立格子 ─────────────────────────
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 
+const tintCache = new Map();
+function tintMat(m) {
+  if (!M.sand || !/GREEN/i.test(m.name)) return m;
+  const key = m.uuid + M.sand;
+  if (!tintCache.has(key)) {
+    const c = m.clone();
+    const sand = new THREE.Color(M.sand);
+    if (/DARK/i.test(m.name)) sand.multiplyScalar(0.85);
+    c.color = sand; tintCache.set(key, c);
+  }
+  return tintCache.get(key);
+}
+
 function buildBoard() {
   world.clear();
   grid = [];
   const rand = rng(S.seed);
+  scene.background.set(M.sky); SKY_DAY.set(M.sky);
+  sea.material.color.set(M.sea);
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
     const cell = { i, j, type: 'empty', level: 0, built: 1, obj: null, base: null, trees: null, powered: true, road: false, hap: 50 };
     grid.push(cell);
+    const t = M.terrain(i, j);
+    if (t === 'water') { cell.type = 'water'; setBase(cell, 'tile-water', 0); continue; }
     setBase(cell, 'tile-plain', 0);
-    if (rand() < 0.28) addTrees(cell, rand);
+    if (t === 'hill') {
+      cell.type = 'hill'; setBase(cell, 'tile-hill', Math.floor(rand() * 4) * Math.PI / 2);
+      cell.base.position.y = 6; // tile-hill 比一般地塊高 6m，原點在山頂
+      continue;
+    }
   }
+  // 大型地形／地標（跨多格）
+  for (const f of M.features) {
+    const cs = f.cells.map(([i, j]) => C(i, j));
+    const cx = cs.reduce((s, c) => s + cellCenter(c.i, c.j).x, 0) / cs.length;
+    const cz = cs.reduce((s, c) => s + cellCenter(c.i, c.j).z, 0) / cs.length;
+    const w = (Math.max(...f.cells.map(c => c[0])) - Math.min(...f.cells.map(c => c[0])) + 1) * T;
+    const d = (Math.max(...f.cells.map(c => c[1])) - Math.min(...f.cells.map(c => c[1])) + 1) * T;
+    const g = make(f.model);
+    const sz = protos[f.model]?.userData.size;
+    if (f.scale) g.scale.setScalar(f.scale);
+    else if (sz) {
+      const rotated = Math.abs(Math.sin(f.rot || 0)) > 0.5;
+      const sx = rotated ? sz.z : sz.x, sz2 = rotated ? sz.x : sz.z;
+      g.scale.setScalar(Math.min(w / sx, d / sz2) * 0.98);
+    }
+    g.rotation.y = f.rot || 0;
+    g.position.set(cx, 0, cz);
+    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; if (M.sand && f.model.startsWith('terrain')) o.material = Array.isArray(o.material) ? o.material.map(tintMat) : tintMat(o.material); } });
+    world.add(g);
+    for (const c of cs) { c.type = f.landmark ? 'landmark' : 'mountain'; c.feature = f; }
+  }
+  for (const c of grid) if (c.type === 'empty' && rand() < M.decor.rate) addTrees(c, rand);
+  computeTerrainDist();
+}
+const tDist = { water: new Float32Array(N * N), mountain: new Float32Array(N * N), landmark: new Float32Array(N * N), landmarkV: 0 };
+function computeTerrainDist() {
+  const calc = (arr, pred) => { const src = grid.filter(pred); for (const c of grid) arr[c.j * N + c.i] = src.length ? Math.min(...src.map(o => Math.max(Math.abs(o.i - c.i), Math.abs(o.j - c.j)))) : 99; };
+  calc(tDist.water, c => c.type === 'water');
+  calc(tDist.mountain, c => c.type === 'mountain' || c.type === 'hill');
+  calc(tDist.landmark, c => c.type === 'landmark');
+  tDist.landmarkV = M.features.find(f => f.landmark)?.landmark || 0;
 }
 
 function setBase(cell, name, rotY) {
@@ -140,17 +277,21 @@ function setBase(cell, name, rotY) {
   const b = make(name);
   b.position.copy(cellCenter(cell.i, cell.j));
   b.rotation.y = rotY;
-  b.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+  b.traverse(o => { if (o.isMesh) { o.receiveShadow = true; if (name !== 'tile-park') o.material = Array.isArray(o.material) ? o.material.map(tintMat) : tintMat(o.material); } });
   b.userData.cell = cell;
   world.add(b); cell.base = b;
 }
 
-const TREES = ['tree-round', 'tree-lime', 'tree-oak', 'tree-simple', 'tree-lime_red', 'shrub-round'];
-function addTrees(cell, rand = Math.random) {
+function pickWeighted(ws, r) { let s = 0; for (let k = 0; k < ws.length; k++) { s += ws[k]; if (r < s) return k; } return ws.length - 1; }
+function addTrees(cell, rand = Math.random, density = 1) {
   const g = new THREE.Group();
-  const n = 2 + Math.floor(rand() * 4);
+  const D = M.decor;
+  const setIdx = D.pick ? D.pick(cell.i, cell.j) : pickWeighted(D.weights, rand());
+  const set = D.sets[setIdx];
+  const n = Math.max(1, Math.round((2 + Math.floor(rand() * 4)) * density));
   for (let k = 0; k < n; k++) {
-    const t = make(TREES[Math.floor(rand() * TREES.length)]);
+    const name = set[Math.floor(rand() * set.length)];
+    const t = make(name);
     t.position.set((rand() - .5) * 22, 0, (rand() - .5) * 22);
     t.rotation.y = rand() * 6.28;
     t.scale.setScalar(1.3 + rand() * 0.9);
@@ -273,6 +414,7 @@ function apply(cell, t, silent = false) {
   if (!cell) return false;
   const def = TOOL[t];
   if (t === 'select') { showInfo(cell); return false; }
+  if (TERRAIN.has(cell.type)) { if (!silent) toast(cell.type === 'water' ? '🌊 水面上無法建造' : cell.type === 'landmark' ? '🔺 古蹟受保護，無法建造' : '⛰️ 山地無法建造', 'bad'); return false; }
   if (t === 'bulldoze') {
     if (cell.type === 'empty' && !cell.trees) return false;
     if (!canAfford(def.cost)) return false;
@@ -281,7 +423,7 @@ function apply(cell, t, silent = false) {
     spawnDust(cell);
     return true;
   }
-  if (def.unlock && stats.pop < def.unlock) { if (!silent) toast(`需要人口 ${def.unlock} 才能解鎖「${def.nm}」`, 'bad'); return false; }
+  if (def.unlock && stats.pop < def.unlock && !(t === 'solar' && M.mod.solarFree)) { if (!silent) toast(`需要人口 ${def.unlock} 才能解鎖「${def.nm}」`, 'bad'); return false; }
   if (cell.type !== 'empty') { if (!silent && cell.type !== t) toast('這裡已經有東西了，先拆除吧', 'bad'); return false; }
   if (!canAfford(def.cost)) return false;
   S.money -= def.cost;
@@ -309,11 +451,11 @@ function clearCell(cell) {
 function simulateDay() {
   // 電力
   let sup = 0, use = 0;
-  const buildings = grid.filter(c => c.type !== 'empty' && c.type !== 'road' && c.built >= 1);
+  const buildings = grid.filter(c => c.type !== 'empty' && c.type !== 'road' && !TERRAIN.has(c.type) && c.built >= 1);
   for (const c of buildings) {
     c.road = roadDir(c) >= 0;
     const d = TOOL[c.type];
-    if ((c.type === 'power' || c.type === 'solar') && c.road) sup += d.power;
+    if ((c.type === 'power' || c.type === 'solar') && c.road) sup += Math.round(d.power * ((c.type === 'power' ? M.mod.windMul : M.mod.solarMul) || 1));
   }
   const consumers = buildings.filter(c => ZONE[c.type] || (TOOL[c.type].power < 0));
   for (const c of consumers) {
@@ -348,6 +490,13 @@ function simulateDay() {
     h += cover.hospital[k] ? 8 : -5 * bigCity;
     for (const [dx, dz] of DIRS) { const n = C(c.i + dx, c.j + dz); if (n && n.trees) h += 2; }
     if (ZONE[c.type] && !c.powered) h -= 25;
+    const mod = M.mod;
+    if (mod.treeBonus) for (const [dx, dz] of DIRS) { const n = C(c.i + dx, c.j + dz); if (n && n.trees) h += mod.treeBonus; }
+    if (mod.water && tDist.water[k] <= mod.water.r) h += mod.water.v;
+    if (mod.far && tDist.water[k] > mod.far.r) h -= mod.far.v;
+    if (mod.mountain && tDist.mountain[k] <= mod.mountain.r) h += mod.mountain.v;
+    if (mod.dry && !cover.park[k]) h -= mod.dry.v;
+    if (tDist.landmark[k] <= 3) h += tDist.landmarkV;
     h = Math.max(0, Math.min(100, h));
     hapMap[k] = h; c.hap = h;
     if (c.type === 'res' && c.built >= 1) { const w = ZONE.res.val[c.level]; hapSum += h * w; hapW += w; }
@@ -474,6 +623,60 @@ function balanceAgents() {
   else if (ppl > wantPeople + 2) { const k = agents.findIndex(a => a.kind !== 'car'); agentsGroup.remove(agents[k].mesh); agents.splice(k, 1); }
 }
 
+// ───────────────────────── 地圖特效：船、海鷗、風滾草 ─────────────────────────
+const fxGroup = new THREE.Group(); scene.add(fxGroup);
+const fx = [];
+function setupFx() {
+  fxGroup.clear(); fx.length = 0;
+  const water = grid.filter(c => c.type === 'water');
+  const nb = M.boats || 0;
+  for (let k = 0; k < nb && water.length > 3; k++) {
+    const m = make(['boat-sail', 'boat-fishing', 'boat-speed', 'boat-sail', 'boat-speed'][k % 5]);
+    m.scale.setScalar(m.children[0] && k % 5 === 2 ? 1.4 : 0.9);
+    m.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    const c = water[Math.floor(Math.random() * water.length)];
+    m.position.copy(cellCenter(c.i, c.j)); m.position.y = -1.5;
+    fxGroup.add(m);
+    fx.push({ kind: 'boat', m, target: null, sp: 5 + Math.random() * 6, water });
+  }
+  if (nb) for (let k = 0; k < 6; k++) {
+    const m = make('seagull'); m.scale.setScalar(3); fxGroup.add(m);
+    const c = water[Math.floor(Math.random() * water.length)];
+    fx.push({ kind: 'gull', m, cx: cellCenter(c.i, c.j).x, cz: cellCenter(c.i, c.j).z, r: 20 + Math.random() * 40, a: Math.random() * 6.28, h: 30 + Math.random() * 25, sp: 0.4 + Math.random() * 0.3 });
+  }
+  for (let k = 0; k < (M.tumbleweeds || 0); k++) {
+    const m = make('tumbleweed'); m.scale.setScalar(2.5); fxGroup.add(m);
+    m.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    m.position.set((Math.random() - .5) * N * T, 0, (Math.random() - .5) * N * T);
+    fx.push({ kind: 'weed', m, sp: 8 + Math.random() * 10, ph: Math.random() * 6 });
+  }
+}
+function updateFx(dt) {
+  const half = N * T / 2;
+  for (const f of fx) {
+    if (f.kind === 'boat') {
+      if (!f.target || f.m.position.distanceTo(f.target) < 4) { const c = f.water[Math.floor(Math.random() * f.water.length)]; f.target = cellCenter(c.i, c.j).add(new THREE.Vector3((Math.random() - .5) * 16, -1.5, (Math.random() - .5) * 16)); }
+      const d = f.target.clone().sub(f.m.position); d.y = 0;
+      const want = Math.atan2(d.x, d.z);
+      let diff = want - f.m.rotation.y; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+      f.m.rotation.y += diff * Math.min(1, dt * 1.2);
+      f.m.position.x += Math.sin(f.m.rotation.y) * f.sp * dt;
+      f.m.position.z += Math.cos(f.m.rotation.y) * f.sp * dt;
+      f.m.position.y = -1.5 + Math.sin(performance.now() / 600 + f.sp) * 0.3;
+    } else if (f.kind === 'gull') {
+      f.a += dt * f.sp;
+      f.m.position.set(f.cx + Math.cos(f.a) * f.r, f.h + Math.sin(f.a * 3) * 2, f.cz + Math.sin(f.a) * f.r);
+      f.m.rotation.y = -f.a; f.m.rotation.z = Math.sin(f.a * 6) * 0.3;
+    } else if (f.kind === 'weed') {
+      f.ph += dt;
+      f.m.position.x += f.sp * dt; f.m.position.z += Math.sin(f.ph * 0.7) * 3 * dt;
+      f.m.position.y = Math.abs(Math.sin(f.ph * 4)) * 2.5;
+      f.m.rotation.z -= dt * f.sp * 0.4;
+      if (f.m.position.x > half) { f.m.position.x = -half; f.m.position.z = (Math.random() - .5) * N * T; }
+    }
+  }
+}
+
 // ───────────────────────── 滑鼠／觸控 ─────────────────────────
 const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -583,7 +786,7 @@ function updateHUD() {
   bar('d-r', stats.dR); bar('d-c', stats.dC); bar('d-i', stats.dI);
   const g = GOALS[S.goal];
   $('goal').innerHTML = g ? `目標：人口達 <b>${g}</b><br>${stats.pop} / ${g}` : '<b>🏆 大都市完成！</b>';
-  document.querySelectorAll('.tool').forEach(b => { const t = TOOL[b.dataset.tool]; b.classList.toggle('locked', !!t.unlock && stats.pop < t.unlock); });
+  document.querySelectorAll('.tool').forEach(b => { const t = TOOL[b.dataset.tool]; b.classList.toggle('locked', !!t.unlock && stats.pop < t.unlock && !(t.id === 'solar' && M.mod.solarFree)); });
   if (infoCell) showInfo(infoCell, true);
 }
 
@@ -593,6 +796,11 @@ function showInfo(c, refresh) {
   if (!refresh) infoCell = c;
   if (c.type === 'empty') { box.classList.add('hidden'); infoCell = null; ring.visible = false; return; }
   box.classList.remove('hidden');
+  if (TERRAIN.has(c.type)) {
+    const tip = { water: M.mod.water ? `距離 ${M.mod.water.r} 格內滿意度 +${M.mod.water.v}` : '無法建造', mountain: M.mod.mountain ? `周邊 ${M.mod.mountain.r} 格滿意度 +${M.mod.mountain.v}` : '無法建造', hill: M.mod.mountain ? `周邊 ${M.mod.mountain.r} 格滿意度 +${M.mod.mountain.v}` : '無法建造', landmark: `觀光地標：3 格內滿意度 +${tDist.landmarkV}` }[c.type];
+    box.innerHTML = `<h3>${NAMES[c.type]}</h3><div class="row">效果<b>${tip}</b></div><div class="row">建造<b>❌ 不可建造</b></div>`;
+    return;
+  }
   const z = ZONE[c.type];
   let h = `<h3>${NAMES[c.type]}${z ? `<span class="lv">Lv.${c.level + 1}</span>` : ''}</h3>`;
   if (c.type === 'road') h += `<div class="row">連接方向<b>${c.mask?.toString(2).padStart(4, '0')}</b></div>`;
@@ -622,23 +830,48 @@ function toast(msg, cls = '') {
 $('menuBtn').onclick = () => $('menu').classList.remove('hidden');
 $('btnResume').onclick = () => $('menu').classList.add('hidden');
 $('btnSave').onclick = () => { save(); $('menu').classList.add('hidden'); };
-$('btnNew').onclick = () => { if (confirm('確定要重新開始嗎？目前的城市會被清除。')) { localStorage.removeItem(SAVE_KEY); startGame(newState()); $('menu').classList.add('hidden'); } };
+$('btnNew').onclick = () => { if (confirm('確定要重新開始這張地圖嗎？目前的城市會被清除。')) { localStorage.removeItem(SAVE_KEY + S.map); startGame(newState(S.map)); $('menu').classList.add('hidden'); } };
+$('btnMaps').onclick = () => { save(true); $('menu').classList.add('hidden'); showLevels(); };
+function showLevels() {
+  const box = $('levelList'); box.innerHTML = '';
+  for (const m of MAPS) {
+    const sv = load(m.id);
+    const card = document.createElement('div'); card.className = 'lvcard'; card.style.setProperty('--sky', m.sky);
+    card.innerHTML = `<div class="lvhead"><span class="lvic">${m.ic}</span><div><b>${m.nm}</b><small>難度 ${m.diff}・起始資金 $${m.money.toLocaleString()}</small></div></div>
+      <p>${m.desc}</p><ul>${m.rules.map(r => `<li>${r}</li>`).join('')}</ul>
+      <div class="lvbtns">${sv ? `<button data-act="cont">▶ 繼續（第${sv.day}天・人口 ${sv.pop || 0}）</button><button data-act="new" class="ghost">重新開始</button>` : `<button data-act="new">開始建設</button>`}</div>`;
+    card.querySelectorAll('button').forEach(b => b.onclick = () => {
+      if (b.dataset.act === 'new' && sv && !confirm(`重新開始「${m.nm}」？原本的存檔會被覆蓋。`)) return;
+      $('levels').classList.add('hidden');
+      startGame(b.dataset.act === 'cont' ? sv : newState(m.id));
+      if (b.dataset.act === 'new') toast(`${m.ic} ${m.nm}：${m.rules[0]}`, '');
+    });
+    box.appendChild(card);
+  }
+  $('levels').classList.remove('hidden');
+}
 
 // ───────────────────────── 存讀檔 ─────────────────────────
 function save(quiet) {
-  S.cells = grid.map(c => c.type === 'empty' ? (c.trees ? 1 : 0) : [c.type, c.level, +c.built.toFixed(2)]);
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); if (!quiet) toast('💾 已存檔', 'good'); } catch { }
+  if (!S) return;
+  S.pop = stats.pop;
+  S.cells = grid.map(c => c.type === 'empty' ? (c.trees ? 1 : 0) : TERRAIN.has(c.type) ? 0 : [c.type, c.level, +c.built.toFixed(2)]);
+  try { localStorage.setItem(SAVE_KEY + S.map, JSON.stringify(S)); localStorage.setItem(SAVE_KEY + 'last', S.map); if (!quiet) toast('💾 已存檔', 'good'); } catch { }
 }
-function load() { try { return JSON.parse(localStorage.getItem(SAVE_KEY)); } catch { return null; } }
+function load(id) { try { return JSON.parse(localStorage.getItem(SAVE_KEY + id)); } catch { return null; } }
 addEventListener('beforeunload', () => save(true));
 
 function startGame(state) {
-  S = state;
+  S = state; S.map = S.map || 'grass'; M = MAP(S.map);
+  infoCell = null; $('info').classList.add('hidden');
+  stats.pop = 0;
   agents.forEach(a => agentsGroup.remove(a.mesh)); agents.length = 0;
   buildBoard();
+  setupFx();
   if (S.cells?.length === N * N) {
     grid.forEach((c, k) => {
       const v = S.cells[k];
+      if (TERRAIN.has(c.type)) return;
       if (v === 0) clearTrees(c);
       else if (v === 1) { if (!c.trees) addTrees(c); }
       else if (Array.isArray(v)) { clearTrees(c); c.type = v[0]; c.level = v[1]; c.built = v[2]; }
@@ -646,7 +879,7 @@ function startGame(state) {
     grid.forEach(c => { if (c.type === 'road') { c.mask = -1; refreshRoad(c); } });
     grid.forEach(c => {
       if (c.type === 'park') setBase(c, 'tile-park', 0);
-      if (c.type !== 'empty' && c.type !== 'road') { if (c.built >= 1) placeObject(c, false); else addCrane(c); }
+      if (c.type !== 'empty' && c.type !== 'road' && !TERRAIN.has(c.type)) { if (c.built >= 1) placeObject(c, false); else addCrane(c); }
     });
   } else {
     seedStarter();
@@ -657,11 +890,19 @@ function startGame(state) {
 }
 // 新遊戲：預先鋪一條主幹道
 function seedStarter() {
-  const j = N / 2;
-  for (let i = 2; i < N - 2; i++) { const c = C(i, j); clearTrees(c); c.type = 'road'; }
-  for (let jj = j - 3; jj <= j + 3; jj++) { const c = C(7, jj); clearTrees(c); c.type = 'road'; }
+  for (const [i0, j0, i1, j1] of M.roads) {
+    let i = i0, j = j0;
+    while (true) {
+      const c = C(i, j);
+      if (c && (c.type === 'empty' || c.type === 'road')) { clearTrees(c); c.type = 'road'; }
+      if (i === i1 && j === j1) break;
+      i += Math.sign(i1 - i); j += Math.sign(j1 - j);
+    }
+  }
   grid.forEach(c => { if (c.type === 'road') { c.mask = -1; refreshRoad(c); } });
-  const w = C(5, j - 1); clearTrees(w); w.type = 'power'; w.built = 1; placeObject(w, false);
+  const w = C(...M.windmill); if (w && w.type === 'empty') { clearTrees(w); w.type = 'power'; w.built = 1; placeObject(w, false); }
+  // 鏡頭重設
+  camera.position.set(260, 300, 330); controls.target.set(0, 0, 0);
 }
 
 // ───────────────────────── 主迴圈 ─────────────────────────
@@ -695,6 +936,7 @@ function tick() {
   }
   agentTimer += dt; if (agentTimer > 0.4) { agentTimer = 0; balanceAgents(); }
   updateAgents(dt);
+  updateFx(dt);
 
   // 晝夜（一年＝4個晝夜循環太快，改為每 24 天一輪）
   cycle = ((S.day + dayAcc / DAY_SEC) % 24) / 24;
@@ -737,10 +979,10 @@ new GLTFLoader().load('models/town.glb', gltf => {
   });
   $('loading').classList.add('hidden');
   setControls(); selectTool('select');
-  const saved = load();
-  startGame(saved || newState());
-  if (!saved) { $('menu').classList.remove('hidden'); }
+  let last = null; try { last = localStorage.getItem(SAVE_KEY + 'last'); } catch { }
+  startGame((last && load(last)) || newState('grass'));
+  showLevels();
   tick();
 }, p => { if (p.total) $('loadbar').style.width = (p.loaded / p.total * 100) + '%'; }, err => { $('loadtxt').textContent = '模型載入失敗：' + err.message; });
 
-window.__game = { get S() { return S; }, get grid() { return grid; }, apply: (i, j, t) => apply(C(i, j), t), simulateDay, protos, camera, controls, setSpeed: s => speed = s };
+window.__game = { start: id => { document.getElementById('levels').classList.add('hidden'); startGame(newState(id)); }, get S() { return S; }, get grid() { return grid; }, apply: (i, j, t) => apply(C(i, j), t), simulateDay, protos, camera, controls, setSpeed: s => speed = s };
