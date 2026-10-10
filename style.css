@@ -103,3 +103,33 @@ button{font:inherit;color:inherit;cursor:pointer}
   #info{top:auto;bottom:220px}
   #toasts{left:50%}
 }
+
+#events{position:fixed;top:56px;left:10px;z-index:10;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+.evb{position:relative;overflow:hidden;background:rgba(80,20,20,.85);border:1px solid #ff6b6b;border-radius:10px;padding:6px 12px;font-size:13px;font-weight:700;display:flex;gap:6px;align-items:center;animation:tin .3s,pulse 1.6s infinite}
+.evb i{position:absolute;left:0;bottom:0;height:3px;background:#ff6b6b}
+.evb.sandstorm,.evb.drought{background:rgba(110,70,20,.88);border-color:#f0b23a}
+.evb.plague{background:rgba(40,80,30,.88);border-color:#8bdc5a}
+.evb.campaign{background:rgba(30,50,90,.88);border-color:#5aa0ff}
+@keyframes pulse{50%{box-shadow:0 0 0 4px rgba(255,107,107,.15)}}
+#gov{font-weight:700}
+.soc{border-top:1px solid var(--line);padding-top:8px;display:flex;flex-direction:column;gap:5px;font-size:12px}
+.srow{display:flex;align-items:center;gap:8px}
+.srow span{width:52px;color:var(--mut)}
+.srow b{width:24px;text-align:right;font-variant-numeric:tabular-nums}
+.sbar{flex:1;height:7px;border-radius:4px;background:rgba(255,255,255,.1);overflow:hidden}
+.sbar i{display:block;height:100%;width:0;background:#58c46a;transition:width .5s}
+.sbar i.warn{background:#f0b23a}.sbar i.bad{background:#ff5a5a}
+.sbar.crime i{background:#b04bff}.sbar.crime i.warn{background:#d65bd0}.sbar.crime i.bad{background:#ff3b6b}
+.sbar.tech i{background:#4aa3ff}
+.techtxt{font-size:11px;color:var(--mut);margin:-2px 0 2px 60px}
+.sgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:11px;color:var(--mut)}
+.sgrid b{display:block;color:var(--txt);font-size:13px}
+.resrow{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px}
+.resrow i{font-style:normal;font-size:9px;letter-spacing:-1px;color:var(--acc);margin-left:2px}
+.lvcard .resrow{margin:2px 0 8px}
+.histbox{font-size:11px;color:var(--mut)}
+#hist{width:100%;height:46px;display:block;margin-top:2px;background:rgba(255,255,255,.03);border-radius:6px}
+#eraDesc small{color:var(--mut)}
+@media (max-width:760px){ #side{height:260px} .histbox,.sgrid{display:none} #events{top:auto;bottom:280px} }
+#events{left:calc(50% - 140px);transform:translateX(-50%);top:58px;align-items:center}
+#toasts{top:auto;bottom:50px}

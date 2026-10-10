@@ -2,12 +2,12 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-import { ERAS, MAPS, CHRONICLE, VALS } from './data.js';
+import { ERAS, MAPS, VALS, GOVS, RES_INFO } from './data.js';
 
 // ═════════════════════════ 常數 ═════════════════════════
 const N = 16, T = 30;
 const YEAR_SEC = 2.2;            // 1× 速度下每「回合」秒數
-const SAVE_KEY = 'civ-observer-v1-';
+const SAVE_KEY = 'civ-observer-v2-';
 const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // N E S W（-Z 為北）
 const BIT = [1, 2, 4, 8];
 const ROAD_PIECES = [['tile-road-intersection', 15], ['tile-road-intersection-t', 14], ['tile-road-straight', 5], ['tile-road-curve', 6], ['tile-road-end', 4]];
@@ -18,10 +18,11 @@ const SERVICES = [
   { id: 'fire', ic: '🔥', radius: 4, pop: 70, need: 4 },
   { id: 'school', ic: '📚', radius: 5, pop: 130, need: 6 },
   { id: 'hospital', ic: '⚕️', radius: 5, pop: 220, need: 8 },
+  { id: 'jail', ic: '⛓️', radius: 0, need: 3, special: true },
+  { id: 'army', ic: '🛡️', radius: 5, need: 4, special: true },
 ];
 const SRV = Object.fromEntries(SERVICES.map(s => [s.id, s]));
 const POP_MILESTONES = [25, 60, 120, 250, 500, 800, 1200];
-const GOAL = 90; // 繁榮度達到此值＝極致繁榮
 const SPEEDS = [0, 1, 2, 5, 10, 20];
 
 // ═════════════════════════ 場景 ═════════════════════════
@@ -89,6 +90,18 @@ function buildSpec(spec) {
     g.add(o);
   });
   for (const [em, x, z, es] of opt.extra || []) { const o = make(em); o.position.set(x, 0, z); o.scale.setScalar(es); g.add(o); }
+  if (opt.ring) { // 圍牆：沿四邊排列
+    const [wm, ws] = opt.ring, len = (sizeOf(wm)?.x || 4) * ws, R = 12.5;
+    const n = Math.max(1, Math.floor(2 * R / len));
+    for (let side = 0; side < 4; side++) for (let k = 0; k < n; k++) {
+      const o = make(wm); o.scale.setScalar(ws);
+      const t = -R + len * (k + 0.5) + (2 * R - n * len) / 2;
+      const rot = side % 2 ? Math.PI / 2 : 0;
+      o.rotation.y = rot;
+      o.position.set(side === 1 ? R : side === 3 ? -R : t, 0, side === 0 ? -R : side === 2 ? R : t);
+      g.add(o);
+    }
+  }
   return shadows(g);
 }
 
@@ -206,8 +219,13 @@ let speedIdx = 1, yearAcc = 0;
 const speed = () => SPEEDS[speedIdx];
 
 function newState(mapId, eraId) {
-  const chronicle = eraId === 'chronicle';
-  return { map: mapId, era: chronicle ? 'tribal' : eraId, chronicle, years: 0, year: (chronicle ? ERAS[0] : ERAS.find(e => e.id === eraId)).year0, cells: null, seed: Math.floor(Math.random() * 1e9), log: [], firsts: {}, popMs: 0, prosMs: 0, wonders: 0, done: false, doneAt: 0 };
+  const era = ERAS.find(e => e.id === eraId) || ERAS[0];
+  const k = ERAS.indexOf(era);
+  return {
+    map: mapId, era: era.id, start: era.id, years: 0, year: era.year0, cells: null, seed: Math.floor(Math.random() * 1e9), log: [], firsts: {}, popMs: 0,
+    gov: k === 0 ? 'chief' : k >= 5 ? 'democracy' : 'monarchy', govSince: 0, tech: 0, eraStart: 0, stab: 70, crime: 0, prisoners: 0,
+    ev: [], hist: [], wars: { won: 0, lost: 0 }, mood: 0, peak: 0, breakthroughs: 0,
+  };
 }
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 let rand = Math.random;
@@ -344,6 +362,7 @@ function placeObject(c, animate = true) {
   c.fixedRot = false;
   if (c.type === 'park') { g = makePark(); c.fixedRot = true; }
   else if (c.type === 'wonder') { g = buildWonder(c); c.fixedRot = true; }
+  else if (c.type === 'ruin') { g = buildRuin(c); c.fixedRot = true; }
   else {
     const spec = specFor(c);
     g = buildSpec(spec);
@@ -356,6 +375,16 @@ function placeObject(c, animate = true) {
   world.add(g); c.obj = g; dirty(c);
   if (!c.fixedRot) orient(c);
   if (animate) { c.anim = 0; g.scale.y = 0.001; dust(ctr, c.type === 'wonder' ? 30 : 10); }
+}
+
+// 廢墟（戰爭、災害後）
+function buildRuin(c) {
+  const g = new THREE.Group();
+  const r = rng(c.i * 31 + c.j * 7 + (S?.years || 0));
+  const cr = make(r() < .5 ? 'crater-big' : 'ground-cracked'); cr.scale.setScalar(2.6); g.add(cr);
+  for (let k = 0; k < 7; k++) { const o = make('rubble-stone'); o.position.set((r() - .5) * 20, 0, (r() - .5) * 20); o.rotation.y = r() * 6; o.scale.setScalar(2.5 + r() * 2.5); g.add(o); }
+  if (c.burn > 0) { for (let k = 0; k < 4; k++) { const f = make('fire'); f.position.set((r() - .5) * 16, 0, (r() - .5) * 16); f.scale.setScalar(5 + r() * 4); g.add(f); } g.userData.live = true; }
+  return shadows(g);
 }
 
 // 奇觀
@@ -407,6 +436,15 @@ function dust(ctr, n = 10) {
     scene.add(m); dusts.push(m);
   }
 }
+let smokeT = 0;
+const smokeMat = new THREE.MeshBasicMaterial({ color: '#4a4440', transparent: true, opacity: 0.6, depthWrite: false });
+function smoke(ctr) {
+  const m = new THREE.Mesh(dustGeo, smokeMat.clone());
+  m.position.set(ctr.x + (Math.random() - .5) * 14, 4, ctr.z + (Math.random() - .5) * 14);
+  m.userData = { v: new THREE.Vector3((Math.random() - .5) * 2, 9 + Math.random() * 4, (Math.random() - .5) * 2), life: 1.6, kind: 'smoke' };
+  scene.add(m); dusts.push(m);
+}
+const buildSpeed = () => 0.75 + 0.1 * (RV('wood') + RV('stone'));
 function fireworks(ctr, n = 60) {
   if (dusts.length > 200) return;
   const cols = ['#ff5a5a', '#ffd84a', '#5ad1ff', '#9dff7a', '#ff7af0'];
@@ -438,7 +476,8 @@ function firstOf(key, text) { if (!S.firsts[key]) { S.firsts[key] = 1; log(text)
 function simulate() {
   const blds = grid.filter(c => c.built >= 1 && !TERRAIN.has(c.type) && c.type !== 'empty' && c.type !== 'road' && c.anchor !== false);
   let sup = 0, use = 0;
-  for (const c of blds) { c.road = roadDir(c) >= 0 || c.type === 'wonder'; if (c.type === 'resource' && c.road) sup += resourcePower(c); }
+  for (const c of blds) { c.road = roadDir(c) >= 0 || c.type === 'wonder' || c.type === 'ruin'; if (c.type === 'resource' && c.road) sup += resourcePower(c); }
+  sup = Math.round(sup * (evOn('drought') ? 0.6 : 1) * (evOn('sandstorm') ? 0.75 : 1));
   for (const c of blds) {
     const need = ZONES.includes(c.type) ? (c.level + 1) * (c.type === 'ind' ? 3 : c.type === 'com' ? 2 : 1) : SRV[c.type] ? SRV[c.type].need : 0;
     if (!need) { c.powered = true; continue; }
@@ -448,17 +487,20 @@ function simulate() {
   const stamp = (c, r, f) => { for (let j = c.j - r; j <= c.j + r; j++) for (let i = c.i - r; i <= c.i + r; i++) if (inside(i, j)) f(j * N + i, Math.max(Math.abs(i - c.i), Math.abs(j - c.j))); };
   for (const c of blds) {
     if (c.type === 'park') stamp(c, 3, (k, d) => cover.park[k] += d <= 1 ? 12 : 6);
-    else if (SRV[c.type] && c.powered && c.road) stamp(c, SRV[c.type].radius, k => cover[c.type][k] = 1);
+    else if (SRV[c.type] && cover[c.type] && c.powered && c.road) stamp(c, SRV[c.type].radius, k => cover[c.type][k] = 1);
     else if (c.type === 'ind' && c.powered) stamp(c, 2, (k, d) => cover.poll[k] += (c.level + 1) * (d <= 1 ? 5 : 2.5));
     else if (c.type === 'wonder') stamp(c, 4, k => cover.wonder[k] = 1);
   }
-  let pop = 0, jC = 0, jI = 0;
+  let pop = 0, jC = 0, jI = 0; const jm = evOn('depression') ? 0.65 : 1;
   for (const c of blds) if (ZONES.includes(c.type) && c.road && c.powered) {
     const v = zoneVal(c.type, c.level);
-    if (c.type === 'res') pop += v; else if (c.type === 'com') jC += v; else jI += v;
+    if (c.type === 'res') pop += v; else if (c.type === 'com') jC += v * jm; else jI += v * jm;
   }
+  jC = Math.round(jC); jI = Math.round(jI);
   const workers = pop * 0.55, jobs = jC + jI;
-  const unemp = workers > 0 ? Math.max(0, workers - jobs) / workers : 0;
+  const unemp = S.gov === 'communist' ? 0 : workers > 0 ? Math.max(0, workers - jobs) / workers : 0;
+  const G = GOVS[S.gov];
+  const plague = evGet('plague');
   const big = Math.min(1, pop / 300);
   let hs = 0, hw = 0;
   for (let k = 0; k < N * N; k++) {
@@ -475,6 +517,13 @@ function simulate() {
     if (md.dry && !cover.park[k]) h -= md.dry.v;
     if (tDist.landmark[k] <= 3) h += tDist.landmarkV;
     if (ZONES.includes(c.type) && !c.powered) h -= 25;
+    h += G.hap + S.mood - S.crime * 0.12;
+    if (c.trouble > 0) h -= 15;
+    if (evOn('sandstorm')) h -= 10;
+    if (evOn('war')) h -= 6;
+    if (plague) h -= cover.hospital[k] ? 4 : 12;
+    if (evOn('famine')) h -= 10;
+    if (evOn('golden')) h += 6;
     c.hap = Math.max(0, Math.min(100, h));
     c.cov = { police: cover.police[k], fire: cover.fire[k], school: cover.school[k], hospital: cover.hospital[k] };
     if (c.type === 'res' && c.built >= 1) { const w = zoneVal('res', c.level); hs += c.hap * w; hw += w; }
@@ -482,7 +531,7 @@ function simulate() {
   const hap = hw ? hs / hw : 56;
   const cl = v => Math.max(-1, Math.min(1, v));
   const dR = cl((jobs - workers + 14 + (hap - 50) * 0.5) / 36);
-  const dC = cl((pop * 0.34 - jC + 6) / 28);
+  const dC = cl((pop * 0.34 - jC + 6) / 28 + RV('trade') * 0.06);
   const dI = cl((pop * 0.28 - jI + 10) / 28);
   const D = { res: dR, com: dC, ind: dI };
 
@@ -491,7 +540,8 @@ function simulate() {
     if (!ZONES.includes(c.type) || !c.road || !c.powered) continue;
     const need = 36 + c.level * 7;
     if ((D[c.type] > -0.1 || (c.hap >= 68 && D[c.type] > -0.6)) && c.hap >= need && c.level < maxLv(c.type) - 1) {
-      if (rand() < 0.06 + Math.max(0, D[c.type]) * 0.1) { c.level++; placeObject(c); }
+      const gm = G.growth * (0.7 + 0.15 * RV('food')) * (evOn('famine') || plague ? 0.2 : 1) * (evOn('golden') ? 1.6 : 1) * (evOn('depression') ? 0.4 : 1);
+      if (rand() < (0.06 + Math.max(0, D[c.type]) * 0.1) * gm) { c.level++; placeObject(c); }
     } else if (c.hap < 20 && c.level > 0 && rand() < 0.03) { c.level--; placeObject(c); }
   }
 
@@ -504,21 +554,10 @@ function simulate() {
   const lvl = zoned.length ? zoned.reduce((s, c) => s + c.level / Math.max(1, maxLv(c.type) - 1), 0) / zoned.length : 0;
   const hapN = Math.max(0, Math.min(1, (hap - 35) / 40));
   const wonders = Math.min(3, grid.filter(c => c.type === 'wonder' && c.anchor && c.built >= 1 && c.wEra === E.id).length);
-  const pros = Math.round(100 * (0.3 * dev + 0.35 * lvl * Math.min(1, dev * 1.5) + 0.2 * hapN * Math.min(1, dev * 2) + 0.15 * wonders / 3));
-  stats = { pop, jobs, use, sup, hap, dR, dC, dI, pros, D, dev, lvl, zoned: zoned.length, buildable, wonders };
-
-  // 里程碑
+  const pros = Math.round(100 * (0.3 * dev + 0.3 * lvl * Math.min(1, dev * 1.5) + 0.2 * hapN * Math.min(1, dev * 2) + 0.1 * wonders / 3 + 0.1 * S.stab / 100));
+  const res = blds.filter(c => c.type === 'res');
+  stats = { pop, jobs, use, sup, hap, dR, dC, dI, pros, D, dev, lvl, zoned: zoned.length, buildable, wonders, unemp, workers, cover, resN: res.length, indShare: jI / Math.max(1, jobs) };
   while (S.popMs < POP_MILESTONES.length && pop >= POP_MILESTONES[S.popMs]) { log(`👥 人口突破 ${POP_MILESTONES[S.popMs]} 人`); S.popMs++; }
-  const pm = [25, 50, 75];
-  while (S.prosMs < pm.length && pros >= pm[S.prosMs]) { log(`📈 繁榮度達到 ${pm[S.prosMs]}%`); S.prosMs++; }
-  if (!S.done && pros >= GOAL) {
-    S.done = true; S.doneAt = S.years;
-    log(`🏆 ${E.nm}文明達到極致繁榮！`, true);
-    fireworks(new THREE.Vector3(0, 0, 0), 80);
-    if (!S.chronicle || E === ERAS[ERAS.length - 1]) showVictory();
-    else toast(`🏆 ${E.nm}達到極致繁榮！文明即將邁入下一個時代…`, 'good');
-  }
-  if (S.chronicle && S.done && S.years - S.doneAt >= 8 && S.years - (S.eraStart || 0) >= 45 && E !== ERAS[ERAS.length - 1]) advanceEra();
 }
 
 // ═════════════════════════ 自動發展 AI ═════════════════════════
@@ -561,6 +600,16 @@ function bestCell(scoreFn) {
   return best;
 }
 const countNear = (c, r, pred) => grid.filter(o => cheb(o, c) <= r && pred(o)).length;
+// 沒有空地時：徵收一處最低等級的民居／工坊（城市更新）
+function cellOrRenew(scoreFn, why) {
+  const c = bestCell(scoreFn); if (c) return c;
+  const old = grid.filter(o => (o.type === 'res' || o.type === 'ind' || o.type === 'com') && o.built >= 1 && o.road).sort((a, b) => a.level - b.level || scoreFn(b) - scoreFn(a))[0];
+  if (!old || old.level > 1) return null;
+  if (old.obj) { world.remove(old.obj); old.obj = null; dirty(old); }
+  old.type = 'empty'; old.level = 0;
+  if (why && rand() < 0.5) log(`🏗️ 徵收舊屋，改建${why}`);
+  return old;
+}
 
 function aiTurn() {
   const pop = stats.pop;
@@ -568,6 +617,20 @@ function aiTurn() {
   const maxCon = 2 + Math.min(8, Math.floor(pop / 80));
   const nm = E.names;
   const act = () => --actions > 0 && underConstruction() < maxCon;
+
+  // 0. 廢墟：火勢熄滅後清理並重建
+  let rebuilt = 0;
+  for (const c of grid) {
+    if (c.type !== 'ruin') continue;
+    if (c.burn > 0 && --c.burn === 0) placeObject(c, false);
+    if (--c.ruinT <= 0 && c.burn <= 0 && rebuilt < 3 && rand() < 0.6) {
+      const prev = c.prevType;
+      if (c.obj) { world.remove(c.obj); c.obj = null; dirty(c); }
+      c.type = 'empty'; rebuilt++;
+      if (prev && prev !== 'wonder') buildAt(c, prev, prev === 'resource' ? { resIdx: c.prevRes } : {});
+    }
+  }
+  if (rebuilt) firstOf('rebuild' + Math.floor(S.years / 20), `🧱 居民開始在廢墟上重建家園`);
 
   // 1. 資源（水源／糧倉／電力）：不足時新建，土地不夠或已有多座就升級
   const resCells = grid.filter(c => c.type === 'resource');
@@ -595,14 +658,26 @@ function aiTurn() {
   }
   // 2. 公共建設
   for (const s of SERVICES) {
-    if (pop < s.pop) continue;
+    if (s.special || pop < s.pop) continue;
     if (grid.some(c => c.type === s.id && c.built < 1)) continue;
     const res = grid.filter(c => (c.type === 'res' || c.type === 'com') && c.built >= 1);
     const uncovered = res.filter(c => !c.cov?.[s.id]);
     const have = grid.some(c => c.type === s.id);
     if (have && uncovered.length < Math.max(3, res.length * 0.25)) continue;
-    const c = bestCell(c => uncovered.filter(o => cheb(o, c) <= s.radius).length * 2 - nearCenter(c) * 0.2);
+    const c = cellOrRenew(c => uncovered.filter(o => cheb(o, c) <= s.radius).length * 2 - nearCenter(c) * 0.2, nm[s.id]);
     if (c) { buildAt(c, s.id); firstOf(s.id, `${s.ic} 建立了第一座${nm[s.id]}`); if (!act()) return; }
+  }
+  // 2b. 監獄與軍隊
+  const jails = grid.filter(c => c.type === 'jail').length, cap = jails * 25;
+  if (pop >= 60 && !grid.some(c => c.type === 'jail' && c.built < 1) && ((jails === 0 && S.crime > 18) || (cap && S.prisoners > cap * 0.75))) {
+    const c = cellOrRenew(c => nearCenter(c) * 0.6 - countNear(c, 2, o => o.type === 'res') * 1.2, nm.jail);
+    if (c) { buildAt(c, 'jail'); firstOf('jail', `⛓️ 建立了第一座${nm.jail}`); if (!act()) return; }
+  }
+  const armies = grid.filter(c => c.type === 'army').length;
+  const wantArmy = (pop >= 50 ? 1 : 0) + Math.floor(pop / 450) + (S.wars.lost > S.wars.won ? 1 : 0) + (S.gov === 'empire' || S.gov === 'dictatorship' ? 1 : 0) + (RV('ore') >= 3 ? 1 : 0);
+  if (armies < wantArmy && !grid.some(c => c.type === 'army' && c.built < 1)) {
+    const c = cellOrRenew(c => nearCenter(c) * 0.5 - countNear(c, 1, o => o.type === 'army') * 3, nm.army);
+    if (c) { buildAt(c, 'army'); firstOf('army', `🛡️ 組建了第一支${nm.army}`); if (!act()) return; }
   }
   // 3. 公園
   const parks = grid.filter(c => c.type === 'park').length;
@@ -670,18 +745,248 @@ function advanceEra() {
   const k = ERAS.indexOf(E);
   const next = ERAS[k + 1];
   const oldE = E;
-  E = next; S.era = next.id; S.done = false; S.prosMs = 0; S.eraStart = S.years;
+  E = next; S.era = next.id; S.eraStart = S.years; S.eraTech = S.tech;
+  if (S.gov === 'chief') S.gov = 'monarchy';
   S.year = Math.max(S.year, next.year0);
-  log(`${next.ic} 文明邁入新時代：${next.nm}`, true);
+  log(`${next.ic} 科技突破，文明邁入新時代：${next.nm}`, true);
   toast(`${next.ic} 邁入新時代：${next.nm}`, 'good');
   fireworks(new THREE.Vector3(), 60);
   for (const c of grid) {
     if (isRoad(c)) { refreshRoad(c, true); continue; }
-    if (ZONES.includes(c.type)) c.level = Math.min(maxLv(c.type) - 1, Math.floor(c.level / Math.max(1, oldE[c.type].length - 1) * (maxLv(c.type) - 1) * 0.25));
+    if (ZONES.includes(c.type)) c.level = Math.min(maxLv(c.type) - 1, Math.floor(c.level / Math.max(1, oldE[c.type].length - 1) * (maxLv(c.type) - 1) * 0.5));
     if (c.type === 'resource') c.resIdx = 0;
-    if (c.type !== 'empty' && !TERRAIN.has(c.type) && c.type !== 'wonder' && c.built >= 1) placeObject(c);
+    if (c.type !== 'empty' && !TERRAIN.has(c.type) && c.type !== 'wonder' && c.type !== 'ruin' && c.built >= 1) placeObject(c);
   }
   resetAgents(); applyEraUI();
+}
+
+// ═════════════════════════ 社會：犯罪、政體、事件、科技 ═════════════════════════
+const RV = k => M.res?.[k] ?? 1;
+const evGet = t => S?.ev?.find(e => e.type === t);
+const evOn = t => !!evGet(t);
+const eraIdx = () => ERAS.indexOf(E);
+const ERA_TECH = k => 250 + 250 * k;
+const govName = () => { const g = GOVS[S.gov]; return g.names?.[E.id] || g.nm; };
+const pickR = arr => arr[Math.floor(rand() * arr.length)];
+function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+const builtOf = t => grid.filter(c => c.type === t && c.built >= 1);
+function armyStrength() {
+  return Math.round((builtOf('army').length * 30 + builtOf('police').length * 6 + stats.pop * 0.02) * GOVS[S.gov].mil * (1 + RV('ore') * 0.1) * (1 + eraIdx() * 0.15));
+}
+const jailCap = () => builtOf('jail').length * 25;
+let shakeT = 0;
+
+function ruinCells(cells, burn = 0) {
+  let n = 0, lost = 0;
+  for (const c of cells) {
+    if (!c || c.type === 'empty' || isRoad(c) || TERRAIN.has(c.type) || c.type === 'ruin' || c.type === 'wonder' || c.built < 1) continue;
+    if (c.type === 'res') lost += zoneVal('res', c.level);
+    c.prevType = c.type; c.prevRes = c.resIdx; c.prevLevel = c.level;
+    c.type = 'ruin'; c.level = 0; c.burn = burn; c.ruinT = 4 + Math.floor(rand() * 5);
+    placeObject(c, false); dust(cellCenter(c.i, c.j), 5); n++;
+  }
+  return { n, lost };
+}
+
+// ── 犯罪 ──
+function crimeTurn() {
+  const G = GOVS[S.gov], pop = stats.pop;
+  if (pop < 20) { S.crime = 0; return; }
+  const blds = grid.filter(c => (c.type === 'res' || c.type === 'com') && c.built >= 1);
+  const pc = c => stats.cover.police[c.j * N + c.i];
+  const covered = blds.length ? blds.filter(pc).length / blds.length : 0;
+  const cap = jailCap();
+  const jailEff = cap ? Math.max(0, 1 - S.prisoners / cap) : 0;
+  let rate = (6 + Math.min(30, pop / 45)) * (1 + stats.unemp * 2.2 + Math.max(0, 55 - stats.hap) / 35 + RV('trade') * 0.08 + G.crime) * (1 - covered * 0.5) * (1 - jailEff * 0.25);
+  if (evOn('war') || evOn('riot') || evOn('famine')) rate *= 1.35;
+  S.crime += (Math.max(0, Math.min(100, rate)) - S.crime) * 0.25;
+  const n = Math.floor(S.crime / 22 + rand() * 1.3);
+  for (let k = 0; k < n && blds.length; k++) {
+    const c = pickR(blds);
+    spawnThief(c);
+    if (pc(c) && rand() < 0.55 + (G.crime < 0 ? 0.2 : 0)) {
+      if (S.prisoners < cap) { S.prisoners++; if (rand() < 0.2) log(`👮 ${E.names[c.type]}竊盜案告破，嫌犯被關進${E.names.jail}`); }
+      else if (rand() < 0.25) log(`⚠️ ${cap ? E.names.jail + '已經爆滿' : '城裡沒有' + E.names.jail}，嫌犯被釋放`);
+    } else {
+      c.trouble = 5;
+      if (rand() < 0.3) log(`🦹 ${E.names[c.type]}${pickR(c.type === 'com' ? ['遭到搶劫', '被闖空門', '遭幫派勒索'] : ['遭竊', '被闖空門', '遭搶劫'])}`);
+    }
+  }
+  if (S.prisoners > 0 && rand() < 0.35) S.prisoners = Math.max(0, S.prisoners - 1 - Math.floor(S.prisoners * 0.06));
+  for (const c of grid) if (c.trouble > 0) c.trouble--;
+}
+
+// ── 穩定度 ──
+function stabilityTurn() {
+  const G = GOVS[S.gov];
+  const age = S.years - S.govSince;
+  const decline = S.gov === 'democracy' ? Math.min(15, Math.max(0, age - 80) * 0.08) : Math.min(30, Math.max(0, age - 45) * 0.18); // 王朝老化、權力腐敗／政治極化
+  const t = 18 + stats.hap * 0.5 + G.stab - S.crime * 0.35 - decline - (evOn('war') ? 8 : 0) - (evOn('plague') ? 8 : 0) - (evOn('famine') ? 10 : 0) - (evOn('riot') ? 6 : 0) - (evOn('depression') ? 10 : 0) + (evOn('golden') ? 8 : 0) + Math.min(8, age * 0.2);
+  if (decline > 12 && !S.firsts['decl' + S.govSince]) { S.firsts['decl' + S.govSince] = 1; log(`🍂 ${govName()}日漸腐敗，民間怨聲四起`); }
+  if (S.gov === 'democracy' && age > 0 && age % 16 === 0) log(`🗳️ 舉行定期選舉，${rand() < 0.5 ? '執政黨連任' : '政黨輪替'}`);
+  S.stab += (Math.max(0, Math.min(100, t)) - S.stab) * 0.12;
+  S.mood *= 0.9;
+}
+
+// ── 政體 ──
+function setGov(g, how) {
+  const old = govName();
+  S.gov = g; S.govSince = S.years;
+  log(`${GOVS[g].ic} ${how}：${old} → ${govName()}`, true);
+  toast(`${GOVS[g].ic} ${how}！${govName()}`, g === 'dictatorship' ? 'bad' : 'good');
+  applyEraUI();
+}
+function govTurn() {
+  if (S.years - S.govSince < 12) return;
+  const k = eraIdx(), h = stats.hap, st = S.stab;
+  const armies = grid.filter(c => c.type === 'army').length, schools = grid.filter(c => c.type === 'school').length;
+  if (st < 28 && stats.pop > 60 && rand() < 0.12) {
+    const w = {
+      democracy: k >= 1 ? RV('trade') + schools * 1.2 + k * 0.6 + (S.gov === 'dictatorship' ? 2 : 0) : 0,
+      communist: k >= 3 ? stats.unemp * 12 + stats.indShare * 5 + (k >= 4 ? 2 : 0) + (S.crime > 50 ? 1 : 0) : 0,
+      dictatorship: S.crime / 15 + armies + S.wars.lost * 1.5,
+      monarchy: k < 3 ? 3 : 0.4,
+    };
+    delete w[S.gov];
+    const tot = Object.values(w).reduce((a, b) => a + Math.max(0, b), 0);
+    let x = rand() * tot, pick = 'monarchy';
+    for (const [g, v] of Object.entries(w)) { x -= Math.max(0, v); if (x <= 0) { pick = g; break; } }
+    ruinCells(shuffle(grid.filter(c => (c.type === 'com' || c.type === 'res') && c.built >= 1)).slice(0, 2 + Math.floor(rand() * 3)), 3);
+    S.stab = 55;
+    return setGov(pick, k <= 1 ? '宮廷政變' : '革命爆發');
+  }
+  if (S.gov === 'chief' && stats.pop >= 120 && rand() < 0.08) return setGov('monarchy', '王權建立');
+  if (S.gov === 'monarchy' && S.wars.won >= 2 && armies >= 2 && RV('ore') >= 2 && rand() < 0.07) return setGov('empire', '稱帝建國');
+  if ((S.gov === 'monarchy' || S.gov === 'empire') && k >= 1 && h > 66 && st > 55 && (RV('trade') >= 2 || k >= 4) && schools >= 1 && S.years - S.govSince > 30 && rand() < 0.008 + k * 0.006) return setGov('democracy', '民主改革');
+  if (S.gov === 'democracy' && S.wars.lost >= 1 && st < 40 && rand() < 0.08) return setGov('dictatorship', '軍人奪權');
+  if (S.gov === 'dictatorship' && S.years - S.govSince > 30 && st > 50 && rand() < 0.06) return setGov(k >= 3 ? 'democracy' : 'monarchy', '還政於民');
+  if (S.gov === 'communist' && S.years - S.govSince > 40 && rand() < (h < 55 ? 0.05 : 0.02)) return setGov('democracy', h < 55 ? '和平轉型' : '改革開放');
+}
+
+// ── 隨機事件 ──
+const EVT = {
+  war: { ic: '⚔️', nm: () => E.war, dur: [5, 9] },
+  campaign: { ic: '🏹', nm: () => '對外遠征', dur: [5, 8] },
+  riot: { ic: '🔥', nm: () => E.riot, dur: [2, 4] },
+  fire: { ic: '🔥', nm: () => '城中大火', dur: [2, 3] },
+  quake: { ic: '🌋', nm: () => '大地震', dur: [1, 2] },
+  flood: { ic: '🌊', nm: () => M.id === 'coast' ? '海嘯來襲' : '洪水氾濫', dur: [2, 3] },
+  sandstorm: { ic: '🌪️', nm: () => '沙暴', dur: [4, 7] },
+  drought: { ic: '☀️', nm: () => '大旱', dur: [6, 10] },
+  famine: { ic: '🥀', nm: () => '饑荒', dur: [5, 8] },
+  plague: { ic: '🦠', nm: () => E.id === 'modern' ? '傳染病大流行' : '瘟疫', dur: [6, 12] },
+  depression: { ic: '📉', nm: () => E.id === 'modern' || E.id === 'western' ? '經濟大蕭條' : '商路斷絕、百業蕭條', dur: [6, 12] },
+  golden: { ic: '✨', nm: () => '黃金時代', dur: [8, 14] },
+};
+const evFx = new THREE.Group(); scene.add(evFx);
+function startEvent(type, extra = {}) {
+  const d = EVT[type]; const dur = d.dur[0] + Math.floor(rand() * (d.dur[1] - d.dur[0] + 1));
+  const e = { type, left: dur, total: dur, nm: d.nm(), ic: d.ic, dead: 0, ...extra };
+  S.ev.push(e);
+  const big = ['war', 'plague', 'quake', 'flood', 'famine'].includes(type);
+  log(`${d.ic} ${e.nm}${e.msg || ''}`, big);
+  toast(`${d.ic} ${e.nm}！`, 'bad');
+  EV_START[type]?.(e);
+}
+const flammable = () => grid.filter(c => c.built >= 1 && (ZONES.includes(c.type) || SRV[c.type] || c.type === 'resource' || c.type === 'park'));
+const EV_START = {
+  war(e) { e.enemy = Math.round((0.55 + rand() * 0.95) * (0.5 * (25 + stats.pop * 0.06) * (1 + eraIdx() * 0.15) + 0.5 * armyStrength())); e.side = Math.floor(rand() * 4); },
+  campaign(e) { e.enemy = Math.round((0.5 + rand() * 0.9) * (25 + stats.pop * 0.05) * (1 + eraIdx() * 0.15)); e.side = Math.floor(rand() * 4); },
+  riot() { ruinCells(shuffle(grid.filter(c => (c.type === 'com' || c.type === 'res') && c.built >= 1 && c.hap < 55)).slice(0, 1 + Math.floor(rand() * 3)), 3); for (let k = 0; k < 6; k++) spawnUnit('enemy', null, 6); },
+  fire(e) {
+    const cs = flammable(); if (!cs.length) return;
+    const c = pickR(cs), fc = stats.cover.fire[c.j * N + c.i];
+    const area = grid.filter(o => cheb(o, c) <= 1 && rand() < (fc ? 0.15 : 0.55));
+    const r = ruinCells([c, ...area], 3); e.msg = `，${r.n} 棟建築付之一炬${fc ? `（${E.names.fire}及時撲滅）` : ''}`; log(`🔥 火勢${fc ? '已控制' : '延燒'}：${r.n} 棟建築燒毀`);
+  },
+  quake() { shakeT = 3; const r = ruinCells(shuffle(flammable()).filter(c => rand() < 0.3 + c.level * 0.12).slice(0, 2 + Math.floor(rand() * 5))); log(`🏚️ 地震震垮了 ${r.n} 棟建築`); },
+  flood() { const r = ruinCells(grid.filter(c => tDist.water[c.j * N + c.i] <= (M.id === 'coast' ? 2 : 1) && rand() < 0.35)); log(`🌊 水淹 ${r.n} 棟建築`); },
+  plague() { for (let k = 0; k < 10; k++) { const m = make(rand() < 0.6 ? 'covid' : 'rat'); m.scale.setScalar(m.children[0] && k % 3 ? 40 : 4); m.userData.ph = rand() * 6; evFx.add(m); } },
+  famine() { },
+};
+const EV_TURN = {
+  plague(e) {
+    for (const c of grid) if (c.type === 'res' && c.level > 0 && c.built >= 1 && rand() < (stats.cover.hospital[c.j * N + c.i] ? 0.03 : 0.12) * (E.id === 'modern' ? 0.6 : 1)) { e.dead += zoneVal('res', c.level) - zoneVal('res', c.level - 1); c.level--; placeObject(c, false); }
+  },
+  famine(e) { for (const c of grid) if (c.type === 'res' && c.level > 0 && c.built >= 1 && rand() < 0.07) { e.dead += zoneVal('res', c.level) - zoneVal('res', c.level - 1); c.level--; placeObject(c, false); } },
+  fire() { for (const c of grid) if (c.type === 'ruin' && c.burn > 1) for (const [dx, dz] of DIRS) { const n = C(c.i + dx, c.j + dz); if (n && n.built >= 1 && !stats.cover.fire[n.j * N + n.i] && rand() < 0.08) ruinCells([n], 3); } },
+  war(e) { const n = Math.min(10, 2 + Math.floor(e.enemy / 25)); for (let k = 0; k < n; k++) spawnUnit('enemy', e.side, 12); for (let k = 0; k < Math.min(8, builtOf('army').length * 2 + 1); k++) spawnUnit('soldier', e.side, 12); },
+  campaign(e) { for (let k = 0; k < Math.min(8, builtOf('army').length * 2); k++) spawnUnit('soldier', e.side, 10, true); },
+};
+const EV_END = {
+  war(e) {
+    const def = armyStrength(), roll = def * (0.75 + rand() * 0.5);
+    if (roll >= e.enemy) { S.wars.won++; S.mood = 6; S.stab = Math.min(100, S.stab + 8); log(`🛡️ ${E.names.army}擊退了來犯之敵！（我軍 ${def} vs 敵軍 ${e.enemy}）`, true); toast('🛡️ 保衛戰勝利！', 'good'); fireworks(new THREE.Vector3(), 30); }
+    else {
+      S.wars.lost++; S.mood = -8; S.stab -= 15;
+      const [dx, dz] = DIRS[e.side];
+      const edge = c => dx ? (dx > 0 ? N - 1 - c.i : c.i) : (dz > 0 ? N - 1 - c.j : c.j);
+      const n = 3 + Math.round(7 * Math.min(1, (e.enemy - roll) / e.enemy));
+      const r = ruinCells(flammable().sort((a, b) => edge(a) - edge(b) + (rand() - .5) * 3).slice(0, n), 4);
+      log(`💀 城池失守，敵軍燒毀 ${r.n} 棟建築（我軍 ${def} vs 敵軍 ${e.enemy}）`, true); toast('💀 戰敗，城市遭劫掠', 'bad');
+    }
+    agents.filter(a => a.kind === 'enemy').forEach(a => a.ttl = 0);
+  },
+  campaign(e) {
+    const def = armyStrength() * (0.7 + rand() * 0.6);
+    if (def >= e.enemy) { S.wars.won++; S.tech += 25; S.mood = 5; log(`🏆 遠征凱旋，帶回大量戰利品與工匠`, true); }
+    else { S.wars.lost++; S.stab -= 12; S.mood = -6; log(`🏳️ 遠征失利，士兵死傷慘重`, true); }
+  },
+  plague(e) { evFx.clear(); log(`🦠 ${e.nm}結束，約 ${e.dead} 人罹難`, true); },
+  famine(e) { log(`🌾 饑荒結束，約 ${e.dead} 人餓死或離開`); },
+  drought() { log('🌧️ 終於下雨了，旱災解除'); },
+  sandstorm() { log('🌤️ 沙暴平息'); },
+  depression() { log('📈 經濟逐漸復甦'); },
+  golden() { log('🌅 黃金時代落幕'); },
+};
+function eventsTurn() {
+  for (const e of S.ev) { EV_TURN[e.type]?.(e); e.left--; }
+  for (const e of S.ev.filter(e => e.left <= 0)) EV_END[e.type]?.(e);
+  S.ev = S.ev.filter(e => e.left > 0);
+  const pop = stats.pop;
+  if (pop < 30 || S.ev.filter(e => e.type !== 'golden').length >= 2) return;
+  const k = eraIdx(), armies = builtOf('army').length;
+  const lastWar = S.lastWar ?? -99;
+  const woodEra = E.id === 'modern' ? 0.5 : 1.3;
+  const fireCov = (() => { const b = flammable(); return b.length ? b.filter(c => stats.cover.fire[c.j * N + c.i]).length / b.length : 0; })();
+  const hospCov = (() => { const b = grid.filter(c => c.type === 'res'); return b.length ? b.filter(c => stats.cover.hospital[c.j * N + c.i]).length / b.length : 0; })();
+  const P = {
+    war: S.years - lastWar > 22 ? 0.01 + Math.min(0.02, (S.years - lastWar) * 0.0002) + RV('ore') * 0.005 + RV('trade') * 0.003 + Math.min(0.01, pop / 150000) : 0,
+    campaign: (S.gov === 'empire' || S.gov === 'dictatorship') && armies >= 2 && S.years - lastWar > 15 ? 0.03 : 0,
+    riot: S.stab < 45 || stats.hap < 45 ? 0.03 + Math.max(0, 45 - S.stab) / 300 : 0.002,
+    fire: (0.006 + 0.004 * RV('wood')) * woodEra * (1 - fireCov * 0.75),
+    quake: M.id === 'mountain' ? 0.012 : 0.003,
+    flood: M.id === 'coast' ? 0.012 : M.id === 'oasis' ? 0.008 : 0,
+    sandstorm: M.id === 'desert' ? 0.035 : M.id === 'oasis' ? 0.02 : 0,
+    drought: 0.004 + Math.max(0, 2 - RV('water')) * 0.007,
+    famine: (RV('food') <= 1 ? 0.01 : 0.003) + (evOn('drought') ? 0.06 : 0),
+    depression: S.years - (S.lastDep ?? -40) > 40 ? 0.012 + RV('trade') * 0.004 : 0,
+    golden: S.stab > 65 && stats.hap > 70 ? 0.012 : 0,
+    plague: (0.006 + RV('trade') * 0.002 + Math.max(0, 2 - RV('water')) * 0.002 + Math.min(0.006, pop / 300000)) * (1 - hospCov * 0.6) * (E.id === 'modern' ? 0.6 : 1),
+  };
+  for (const [t, p] of Object.entries(shuffle(Object.entries(P)).reduce((o, [a, b]) => (o[a] = b, o), {}))) {
+    if (evOn(t) || rand() >= p) continue;
+    if (t === 'war' || t === 'campaign') S.lastWar = S.years;
+    if (t === 'depression') S.lastDep = S.years;
+    startEvent(t);
+    break;
+  }
+}
+
+// ── 科技與時代 ──
+const BREAKS = ['💡 電腦網路普及全城', '🧬 基因醫療突破', '🔋 再生能源革命', '🤖 人工智慧時代來臨', '🚀 太空探索計畫啟動', '⚛️ 核融合發電成功', '🌐 全球貿易網絡成形', '🧠 腦機介面問世'];
+function techTurn() {
+  const schools = builtOf('school').length;
+  const g = GOVS[S.gov].tech * (1 + RV('ore') * 0.05) * (evOn('plague') || evOn('war') ? 0.6 : 1);
+  S.tech += (0.8 + schools * 1.0 + Math.sqrt(stats.pop) / 8) * g * (evOn('golden') ? 1.4 : 1);
+  const k = eraIdx();
+  if (k < ERAS.length - 1) { if (S.tech - (S.eraTech || 0) >= ERA_TECH(k)) advanceEra(); }
+  else if (S.tech - (S.eraTech || 0) >= 400 + S.breakthroughs * 120) { S.eraTech = S.tech; log(`${BREAKS[S.breakthroughs % BREAKS.length]}`, true); S.breakthroughs++; S.mood += 4; }
+}
+function societyTurn() {
+  crimeTurn(); stabilityTurn(); eventsTurn(); govTurn(); techTurn();
+  S.peak = Math.max(S.peak, stats.pop);
+  S.hist.push(stats.pop); if (S.hist.length > 400) S.hist = S.hist.filter((_, i) => i % 2 === 0);
 }
 
 // ═════════════════════════ 居民與交通 ═════════════════════════
@@ -700,7 +1005,49 @@ function spawnAgent(kind) {
   if (kind === 'car' && E.id !== 'modern') a.sp *= 0.55;
   chooseNext(a, true); agents.push(a);
 }
+const markGeo = new THREE.ConeGeometry(0.42, 0.85, 6); markGeo.rotateX(Math.PI);
+const MARK = { enemy: new THREE.MeshBasicMaterial({ color: '#ff3b3b' }), thief: new THREE.MeshBasicMaterial({ color: '#b04bff' }), soldier: new THREE.MeshBasicMaterial({ color: '#3b8bff' }) };
+function spawnSpecial(kind, cell, dir, opt = {}) {
+  const list = kind === 'thief' ? E.thieves : kind === 'soldier' ? E.soldiers : E.enemies;
+  const mesh = makeAgent(pickR(list)); mesh.scale.setScalar(2.1);
+  const mk = new THREE.Mesh(markGeo, MARK[kind]); mk.position.y = 3.2; mesh.add(mk);
+  if (kind !== 'thief') { const fl = makeAgent(kind === 'enemy' ? 'flag-big' : 'flag-medieval'); fl.scale.setScalar(kind === 'enemy' ? 0.9 : 0.45); fl.position.set(0.5, 0, 0); if (rand() < 0.3) mesh.add(fl); }
+  agentsGroup.add(mesh);
+  const a = { kind, mesh, i: cell.i, j: cell.j, inDir: dir, outDir: dir, t: Math.random(), sp: kind === 'thief' ? 0.55 : 0.3 + Math.random() * 0.1, lane: (Math.random() - .5) * 18, side: 1, pause: 0, ttl: opt.ttl || 10, target: opt.target };
+  chooseNext(a); agents.push(a);
+}
+function spawnThief(c) {
+  if (agents.filter(a => a.kind === 'thief').length > 6) return;
+  const k = roadDir(c); if (k < 0) return;
+  const r = C(c.i + DIRS[k][0], c.j + DIRS[k][1]); const ns = roadNb(r.i, r.j); if (!ns.length) return;
+  spawnSpecial('thief', r, pickR(ns), { ttl: 6 });
+}
+// 戰爭部隊：side＝敵軍來襲的方向（0北 1東 2南 3西）
+function spawnUnit(kind, side, ttl = 10, outward = false) {
+  if (agents.filter(a => a.kind === kind).length > 24) return;
+  const roads = grid.filter(c => isRoad(c) && roadNb(c.i, c.j).length);
+  if (!roads.length) return;
+  const o = center();
+  const edgeScore = c => side === null || side === undefined ? rand() : side === 0 ? c.j : side === 1 ? -c.i : side === 2 ? -c.j : c.i;
+  let start;
+  if (kind === 'enemy' && side !== null && side !== undefined) start = roads.sort((a, b) => edgeScore(a) - edgeScore(b))[Math.floor(rand() * Math.min(4, roads.length))];
+  else if (kind === 'soldier') { const bases = builtOf('army'); const b = bases.length ? pickR(bases) : C(o.i, o.j); start = roads.sort((a, c) => cheb(a, b) - cheb(c, b))[0]; }
+  else start = pickR(roads);
+  const edgeCell = side === null || side === undefined ? o : roads.sort((a, b) => edgeScore(a) - edgeScore(b))[0];
+  const target = kind === 'enemy' ? o : outward || kind === 'soldier' ? edgeCell : o;
+  spawnSpecial(kind, start, pickR(roadNb(start.i, start.j)), { ttl, target });
+}
 function chooseNext(a, first) {
+  if (a.target) {
+    const ns = roadNb(a.i, a.j);
+    if (ns.length) {
+      const d = k => Math.hypot(a.i + DIRS[k][0] - a.target.i, a.j + DIRS[k][1] - a.target.j);
+      const back = (a.inDir + 2) % 4;
+      let opts = ns.filter(k => k !== back); if (!opts.length) opts = ns;
+      a.outDir = rand() < 0.75 ? opts.sort((x, y) => d(x) - d(y))[0] : pickR(opts);
+      return;
+    }
+  }
   const ns = roadNb(a.i, a.j), back = (a.inDir + 2) % 4;
   let opts = ns.filter(k => k !== back); if (!opts.length) opts = ns.length ? ns : [back];
   if (first && ns.includes(a.inDir)) { a.outDir = a.inDir; return; }
@@ -712,6 +1059,7 @@ function updateAgents(dt) {
   const sm = Math.min(speed(), 3);
   for (let n = agents.length - 1; n >= 0; n--) {
     const a = agents[n];
+    if (a.ttl !== undefined) { a.ttl -= dt * sm; if (a.ttl <= 0) { agentsGroup.remove(a.mesh); agents.splice(n, 1); continue; } }
     if (!isRoad(C(a.i, a.j))) { agentsGroup.remove(a.mesh); agents.splice(n, 1); continue; }
     if (a.pause > 0) { a.pause -= dt * sm; continue; }
     a.t += dt * a.sp * sm;
@@ -730,7 +1078,7 @@ function updateAgents(dt) {
     const t = a.t, u = 1 - t;
     const px = u * u * vA.x + 2 * u * t * vC.x + t * t * vB.x, pz = u * u * vA.z + 2 * u * t * vC.z + t * t * vB.z;
     const tx = 2 * u * (vC.x - vA.x) + 2 * t * (vB.x - vC.x), tz = 2 * u * (vC.z - vA.z) + 2 * t * (vB.z - vC.z);
-    a.mesh.position.set(px, a.kind === 'man' ? Math.abs(Math.sin(a.t * 40)) * 0.25 : 0, pz);
+    a.mesh.position.set(px, a.kind !== 'car' ? Math.abs(Math.sin(a.t * 40)) * 0.25 : 0, pz);
     if (tx * tx + tz * tz > 1e-6) a.mesh.rotation.y = Math.atan2(tx, tz);
   }
 }
@@ -738,7 +1086,7 @@ function balanceAgents() {
   const roads = grid.filter(isRoad).length;
   const wantCars = E.vehicles.length ? Math.min(40, Math.floor(roads / 3), Math.floor(stats.pop / 16)) : 0;
   const wantPpl = Math.min(55, Math.floor(stats.pop / 7) + (roads ? 2 : 0));
-  const cars = agents.filter(a => a.kind === 'car').length, ppl = agents.length - cars;
+  const cars = agents.filter(a => a.kind === 'car').length, ppl = agents.filter(a => a.kind === 'man').length;
   if (cars < wantCars) spawnAgent('car'); else if (cars > wantCars + 2) dropAgent('car');
   if (ppl < wantPpl) spawnAgent('man'); else if (ppl > wantPpl + 3) dropAgent('man');
 }
@@ -808,11 +1156,16 @@ function toast(msg, cls = '') {
   while ($('toasts').children.length > 3) $('toasts').firstChild.remove();
 }
 function applyEraUI() {
-  $('era').innerHTML = `${E.ic} ${E.nm}${S.chronicle ? ` <small>歷史長河 ${ERAS.indexOf(E) + 1}/${ERAS.length}</small>` : ''}`;
+  const k = ERAS.indexOf(E);
+  $('era').innerHTML = `${E.ic} ${E.nm} <small>${k + 1}/${ERAS.length}</small>`;
   $('era').style.borderColor = E.color;
+  $('gov').innerHTML = `${GOVS[S.gov].ic} ${govName()}`;
+  $('gov').title = GOVS[S.gov].desc;
   $('s-resic').textContent = { tribal: '💧', egypt: '💧', east: '🌾', medieval: '💧', western: '💧', modern: '⚡' }[E.id];
   $('s-resic').parentElement.title = E.names.resource + ' 使用/供應';
+  $('mapres').innerHTML = Object.entries(RES_INFO).map(([key, r]) => `<span title="${r.nm}：${r.eff}">${r.ic}<i>${'●'.repeat(RV(key))}${'○'.repeat(3 - RV(key))}</i></span>`).join('');
 }
+function setBar(id, v, cls) { const e = $(id); e.style.width = Math.max(0, Math.min(100, v)) + '%'; if (cls) e.className = cls; }
 function updateHUD() {
   $('s-year').textContent = fmtYear(S.year);
   $('s-pop').textContent = stats.pop.toLocaleString();
@@ -820,14 +1173,41 @@ function updateHUD() {
   $('s-hap').textContent = Math.round(stats.hap) + '%';
   $('s-hapicon').textContent = stats.hap > 70 ? '😄' : stats.hap > 45 ? '🙂' : stats.hap > 25 ? '😐' : '😠';
   $('s-res').textContent = `${stats.use}/${stats.sup}`;
-  const p = Math.min(100, stats.pros);
-  $('pros-fill').style.width = Math.min(100, p / GOAL * 100) + '%';
+  const p = Math.max(0, Math.min(100, stats.pros));
+  $('pros-fill').style.width = p + '%';
   $('pros-val').textContent = p + '%';
-  $('pros-fill').classList.toggle('done', S.done);
-  $('pros-detail').innerHTML = `開發 ${Math.round(stats.dev * 100)}%・建築等級 ${Math.round(stats.lvl * 100)}%・奇觀 ${stats.wonders}/3`;
+  $('pros-detail').innerHTML = `開發 ${Math.round(stats.dev * 100)}%・建築 ${Math.round(stats.lvl * 100)}%・奇觀 ${stats.wonders}/3・歷史最高人口 ${S.peak.toLocaleString()}`;
+  setBar('b-stab', S.stab, S.stab < 30 ? 'bad' : S.stab < 50 ? 'warn' : '');
+  setBar('b-crime', S.crime, S.crime > 50 ? 'bad' : S.crime > 25 ? 'warn' : '');
+  $('v-stab').textContent = Math.round(S.stab);
+  $('v-crime').textContent = Math.round(S.crime);
+  $('v-army').textContent = armyStrength();
+  $('v-jail').textContent = `${S.prisoners}/${jailCap()}`;
+  $('v-wars').textContent = `${S.wars.won}勝 ${S.wars.lost}敗`;
+  const k = ERAS.indexOf(E);
+  const need = k < ERAS.length - 1 ? ERA_TECH(k) : 400 + S.breakthroughs * 120;
+  const got = S.tech - (S.eraTech || 0);
+  setBar('b-tech', got / need * 100);
+  $('v-tech').textContent = k < ERAS.length - 1 ? `→ ${ERAS[k + 1].ic} ${ERAS[k + 1].nm} ${Math.floor(got / need * 100)}%` : `→ 下一項突破 ${Math.floor(got / need * 100)}%`;
   const bar = (id, v) => { const e = $(id); if (v >= 0) { e.style.bottom = '50%'; e.style.top = ''; e.style.height = v * 50 + '%'; } else { e.style.top = '50%'; e.style.bottom = ''; e.style.height = -v * 50 + '%'; } };
   bar('d-r', stats.dR); bar('d-c', stats.dC); bar('d-i', stats.dI);
+  $('events').innerHTML = S.ev.map(e => `<div class="evb ${e.type}"><span>${e.ic}</span>${e.nm}<i style="width:${e.left / e.total * 100}%"></i></div>`).join('');
+  drawHist();
   if (infoCell) showInfo(infoCell);
+}
+function drawHist() {
+  const cv = $('hist'), ctx = cv.getContext('2d');
+  const w = cv.width = cv.clientWidth * devicePixelRatio, h = cv.height = cv.clientHeight * devicePixelRatio;
+  ctx.clearRect(0, 0, w, h);
+  const H = S.hist; if (H.length < 2) return;
+  const mx = Math.max(10, ...H);
+  ctx.beginPath(); ctx.moveTo(0, h);
+  H.forEach((v, i) => ctx.lineTo(i / (H.length - 1) * w, h - v / mx * (h - 4)));
+  ctx.lineTo(w, h); ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, 'rgba(255,207,74,.55)'); g.addColorStop(1, 'rgba(255,207,74,0)');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.beginPath(); H.forEach((v, i) => { const x = i / (H.length - 1) * w, y = h - v / mx * (h - 4); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.strokeStyle = '#ffcf4a'; ctx.lineWidth = 1.5 * devicePixelRatio; ctx.stroke();
 }
 
 let infoCell = null;
@@ -842,6 +1222,7 @@ function showInfo(c) {
     const era = ERAS.find(e => e.id === c.wEra);
     h = `<h3>🏛️ ${era.wonders[c.wIdx].nm}</h3><div class="row">時代<b>${era.ic} ${era.nm}</b></div><div class="row">狀態<b>${(c.group?.[0] || c).built < 1 ? '🏗️ 建造中 ' + Math.floor((c.group?.[0] || c).built * 100) + '%' : '✨ 已完工'}</b></div><div class="row">效果<b>周邊 4 格滿意度 +8</b></div>`;
   } else if (TERRAIN.has(c.type) || c.type === 'road') h = `<h3>${NAMES_T[c.type]}</h3>`;
+  else if (c.type === 'ruin') h = `<h3>🏚️ 廢墟</h3><div class="row">原本是<b>${E.names[c.prevType] || '建築'}</b></div><div class="row">狀態<b>${c.burn > 0 ? '🔥 燃燒中' : '🧱 等待重建'}</b></div>`;
   else {
     const nm = E.names[c.type];
     const z = ZONES.includes(c.type);
@@ -850,7 +1231,10 @@ function showInfo(c) {
     if (z) h += `<div class="row">${c.type === 'res' ? '居民' : '工作'}<b>${zoneVal(c.type, c.level)}</b></div><div class="row">滿意度<b>${Math.round(c.hap)}%</b></div>`;
     if (c.type === 'resource') h += `<div class="row">供應量<b>${resourcePower(c)}</b></div>`;
     if (z || SRV[c.type]) h += `<div class="row">${E.names.resource}<b>${c.powered ? '✅ 充足' : '❌ 不足'}</b></div>`;
-    if (SRV[c.type]) h += `<div class="row">服務範圍<b>${SRV[c.type].radius} 格</b></div>`;
+    if (SRV[c.type] && SRV[c.type].radius) h += `<div class="row">服務範圍<b>${SRV[c.type].radius} 格</b></div>`;
+    if (c.type === 'jail') h += `<div class="row">容量<b>25 人</b></div><div class="row">全城囚犯<b>${S.prisoners}/${jailCap()}</b></div>`;
+    if (c.type === 'army') h += `<div class="row">全城軍力<b>${armyStrength()}</b></div>`;
+    if (c.trouble > 0) h += `<div class="row">治安<b>🦹 近期遭竊</b></div>`;
   }
   box.innerHTML = h;
 }
@@ -886,36 +1270,26 @@ addEventListener('keydown', e => {
 $('menuBtn').onclick = () => { save(); showLevels(); };
 $('logToggle').onclick = () => $('side').classList.toggle('collapsed');
 
-function showVictory() {
-  setSpeed(1);
-  $('victory').innerHTML = `<div class="panel"><div class="big">🏆</div><h2>極致繁榮！</h2>
-    <p>${M.ic} ${M.nm}的${E.ic} ${E.nm}文明，在 ${fmtYear(S.year)} 達到了巔峰。</p>
-    <div class="vstats"><div><b>${stats.pop}</b>人口</div><div><b>${S.years}</b>回合</div><div><b>${stats.wonders}</b>奇觀</div><div><b>${Math.round(stats.hap)}%</b>滿意度</div></div>
-    <div class="btns"><button id="vCont">繼續觀看</button><button id="vMenu" class="ghost">選擇其他地圖／時代</button></div></div>`;
-  $('victory').classList.remove('hidden');
-  $('vCont').onclick = () => $('victory').classList.add('hidden');
-  $('vMenu').onclick = () => { $('victory').classList.add('hidden'); save(); showLevels(); };
-}
-
 // 關卡選擇
-let pickEra = 'chronicle';
+let pickEra = 'tribal';
 function showLevels() {
   const eraBox = $('eraList'); eraBox.innerHTML = '';
-  for (const e of [CHRONICLE, ...ERAS]) {
+  for (const e of ERAS) {
     const b = document.createElement('button'); b.className = 'erachip' + (pickEra === e.id ? ' on' : '');
     b.innerHTML = `<span>${e.ic}</span>${e.nm}`; b.title = e.desc;
     b.onclick = () => { pickEra = e.id; showLevels(); };
     eraBox.appendChild(b);
   }
-  const eraDef = pickEra === 'chronicle' ? CHRONICLE : ERAS.find(e => e.id === pickEra);
-  $('eraDesc').innerHTML = `<b>${eraDef.ic} ${eraDef.nm}</b>　${eraDef.desc}`;
+  const eraDef = ERAS.find(e => e.id === pickEra);
+  $('eraDesc').innerHTML = `<b>起始時代：${eraDef.ic} ${eraDef.nm}</b>　${eraDef.desc}<br><small>文明會隨科技累積持續演進到下一個時代，途中會遭遇戰爭、災害、瘟疫與犯罪，政體也可能改變——沒有終點，一直發展下去。</small>`;
   const box = $('levelList'); box.innerHTML = '';
   for (const m of MAPS) {
     const sv = load(m.id, pickEra);
     const card = document.createElement('div'); card.className = 'lvcard'; card.style.setProperty('--sky', m.sky);
+    const resRow = Object.entries(RES_INFO).map(([k, r]) => `<span title="${r.nm}：${r.eff}">${r.ic}<i>${'●'.repeat(m.res[k])}${'○'.repeat(3 - m.res[k])}</i></span>`).join('');
     card.innerHTML = `<div class="lvhead"><span class="lvic">${m.ic}</span><div><b>${m.nm}</b><small>難度 ${m.diff}</small></div></div>
-      <p>${m.desc}</p><ul>${m.rules.map(r => `<li>${r}</li>`).join('')}</ul>
-      <div class="lvbtns">${sv ? `<button data-act="cont">▶ 繼續觀看<small>${fmtYear(sv.year)}${sv.done ? '・🏆' : ''}</small></button><button data-act="new" class="ghost">重來</button>` : `<button data-act="new">開始觀察文明</button>`}</div>`;
+      <p>${m.desc}</p><div class="resrow">${resRow}</div><ul>${m.rules.map(r => `<li>${r}</li>`).join('')}</ul>
+      <div class="lvbtns">${sv ? `<button data-act="cont">▶ 繼續觀看<small>${fmtYear(sv.year)}・${(ERAS.find(e => e.id === sv.era) || E).ic} ${GOVS[sv.gov]?.ic || ''}</small></button><button data-act="new" class="ghost">重來</button>` : `<button data-act="new">開始觀察文明</button>`}</div>`;
     card.querySelectorAll('button').forEach(b => b.onclick = () => {
       if (b.dataset.act === 'new' && sv && !confirm('重新開始？原本的進度會被覆蓋。')) return;
       $('levels').classList.add('hidden');
@@ -934,9 +1308,10 @@ function save() {
     if (c.type === 'empty') return c.trees ? 1 : 0;
     if (TERRAIN.has(c.type)) return 0;
     if (c.type === 'wonder') return ['wonder', 0, +c.built.toFixed(2), c.wEra, c.wIdx, c.wSpan, c.group.map(g => g.j * N + g.i).join(','), c.anchor ? 1 : 0];
+    if (c.type === 'ruin') return ['ruin', 0, 1, null, c.prevType || null, c.ruinT || 1, c.prevRes ?? null];
     return [c.type, c.level, +c.built.toFixed(2), c.resIdx ?? null];
   });
-  try { localStorage.setItem(slot(S.map, S.chronicle ? 'chronicle' : S.era), JSON.stringify(S)); localStorage.setItem(SAVE_KEY + 'last', slot(S.map, S.chronicle ? 'chronicle' : S.era)); } catch { }
+  try { localStorage.setItem(slot(S.map, S.start), JSON.stringify(S)); localStorage.setItem(SAVE_KEY + 'last', slot(S.map, S.start)); } catch { }
 }
 function load(mapId, eraId) { try { return JSON.parse(localStorage.getItem(slot(mapId, eraId))); } catch { return null; } }
 addEventListener('beforeunload', save);
@@ -945,7 +1320,8 @@ setInterval(save, 15000);
 function startGame(state) {
   S = state; M = MAPS.find(m => m.id === S.map) || MAPS[0]; E = ERAS.find(e => e.id === S.era) || ERAS[0];
   rand = rng(S.seed + 7);
-  resetAgents(); showInfo(null); $('victory').classList.add('hidden');
+  resetAgents(); showInfo(null); evFx.clear(); shakeT = 0;
+  if (evOn('plague')) EV_START.plague();
   buildBoard(); setupFx();
   if (S.cells) {
     const groups = [];
@@ -957,6 +1333,7 @@ function startGame(state) {
       else if (Array.isArray(v)) {
         clearDecor(c); c.type = v[0]; c.level = v[1]; c.built = v[2];
         if (v[0] === 'wonder') { c.wEra = v[3]; c.wIdx = v[4]; c.wSpan = v[5]; c.anchor = !!v[7]; c._g = v[6]; if (c.anchor) groups.push(c); }
+        else if (v[0] === 'ruin') { c.prevType = v[4]; c.ruinT = v[5]; c.prevRes = v[6]; c.burn = 0; }
         else if (v[3] !== null && v[3] !== undefined) c.resIdx = v[3];
       }
     });
@@ -986,7 +1363,7 @@ function seedSettlement() {
   M.center = [start.i, start.j];
   buildAt(start, 'road');
   extendRoads(4);
-  log(`${E.ic} 第一批先民來到${M.nm}，在此定居`, true);
+  log(`${E.ic} 第一批先民來到${M.nm}，在此定居（${govName()}）`, true);
 }
 
 // ═════════════════════════ 主迴圈 ═════════════════════════
@@ -1002,13 +1379,13 @@ function tick() {
       yearAcc -= YEAR_SEC;
       S.years++; S.year += E.step;
       if (S.year === 0) S.year = 1;
-      simulate(); aiTurn();
+      simulate(); societyTurn(); aiTurn();
     }
     if (guard) updateHUD();
   }
   for (const c of grid) {
     if (c.built < 1 && c.type !== 'empty' && !TERRAIN.has(c.type) && !(c.type === 'wonder' && !c.anchor)) {
-      c.built = Math.min(1, c.built + sdt / (c.type === 'wonder' ? 12 : 3));
+      c.built = Math.min(1, c.built + sdt * buildSpeed() / (c.type === 'wonder' ? 12 : 3));
       if (c.built >= 1) {
         removeConstruction(c); placeObject(c);
         if (c.type === 'wonder') { const w = ERAS.find(e => e.id === c.wEra).wonders[c.wIdx]; log(`🏛️ 奇觀「${w.nm}」落成！`, true); toast(`🏛️ 奇觀「${w.nm}」落成！`, 'good'); fireworks(c.wonderCenter, 60); }
@@ -1027,10 +1404,18 @@ function tick() {
     u.life -= dt * (u.kind === 'fw' ? 0.7 : 1.2);
     d.position.addScaledVector(u.v, dt);
     if (u.kind === 'fw') { u.v.y -= 12 * dt; u.v.multiplyScalar(0.98); d.material.opacity = Math.max(0, Math.min(1, u.life)); }
+    else if (u.kind === 'smoke') { d.scale.setScalar(2.5 + (1.6 - u.life) * 5); d.material.opacity = Math.max(0, u.life * .35); }
     else { u.v.multiplyScalar(0.94); d.scale.setScalar(2 + (1 - u.life) * 4); d.material.opacity = Math.max(0, u.life * .7); }
     if (u.life <= 0) { scene.remove(d); d.material.dispose(); dusts.splice(k, 1); }
   }
   bakeDirty(4);
+  // 災害特效：煙霧、地震、沙暴、瘟疫
+  smokeT += dt;
+  if (smokeT > 0.25) { smokeT = 0; for (const c of grid) if (c.type === 'ruin' && c.burn > 0 && dusts.length < 220) smoke(cellCenter(c.i, c.j)); }
+  if (shakeT > 0) { shakeT -= dt; scene.position.set((Math.random() - .5) * 3, 0, (Math.random() - .5) * 3); } else scene.position.set(0, 0, 0);
+  const storm = S && evOn('sandstorm');
+  scene.fog.near += ((storm ? 60 : 700) - scene.fog.near) * Math.min(1, dt); scene.fog.far += ((storm ? 520 : 1500) - scene.fog.far) * Math.min(1, dt);
+  evFx.children.forEach((m, k) => { m.userData.ph += dt; const c = grid.filter(c => c.type === 'res')[k * 7 % Math.max(1, stats.resN)] ; if (c && !m.userData.home) m.userData.home = cellCenter(c.i, c.j); const h = m.userData.home; if (h) m.position.set(h.x + Math.sin(m.userData.ph) * 6, 14 + Math.sin(m.userData.ph * 2) * 3, h.z + Math.cos(m.userData.ph) * 6); m.rotation.y += dt; });
   agentTimer += dt; if (agentTimer > 0.3) { agentTimer = 0; balanceAgents(); }
   updateAgents(dt); updateFx(dt);
 
@@ -1042,6 +1427,7 @@ function tick() {
   sun.position.set(Math.cos(a) * 300, 120 + 300 * day, 160);
   const sky = scene.background;
   if (day > 0.25) sky.copy(SKY_DAY); else if (day > 0) sky.copy(SKY_DUSK).lerp(SKY_DAY, day / 0.25); else sky.copy(SKY_NIGHT).lerp(SKY_DUSK, Math.max(0, 1 + Math.sin(a) * 4));
+  if (S && evOn('sandstorm')) sky.lerp(new THREE.Color('#d9a35a'), 0.75);
   scene.fog.color.copy(sky);
 
   controls.update();
@@ -1063,13 +1449,14 @@ loader.load('models/town.glb', gltf => {
   $('loading').classList.add('hidden');
   let last = null; try { last = localStorage.getItem(SAVE_KEY + 'last'); } catch { }
   let st = null; try { st = last && JSON.parse(localStorage.getItem(last)); } catch { }
-  startGame(st || newState('grass', 'chronicle'));
+  startGame(st || newState('grass', 'tribal'));
   showLevels();
   tick();
 }, p => { if (p.total) $('loadbar').style.width = (p.loaded / p.total * 100) + '%'; }, err => { $('loadtxt').textContent = '模型載入失敗：' + err.message; });
 
 window.__game = {
   start: (m, e) => { $('levels').classList.add('hidden'); startGame(newState(m, e)); },
-  run: n => { for (let k = 0; k < n; k++) { S.years++; S.year += E.step; simulate(); aiTurn(); grid.forEach(c => { if (c.built < 1 && c.type !== 'empty') c.built = Math.min(1, c.built + 0.34); if (c.built >= 1 && c.crane) { removeConstruction(c); placeObject(c, false); } }); } grid.forEach(c => { if (c.obj && c.anim < 1) { c.anim = 1; c.obj.scale.y = 1; } }); bakeDirty(99); updateHUD(); },
+  event: t => startEvent(t),
+  run: n => { for (let k = 0; k < n; k++) { S.years++; S.year += E.step; simulate(); societyTurn(); aiTurn(); grid.forEach(c => { if (c.built < 1 && c.type !== 'empty') c.built = Math.min(1, c.built + 0.34); if (c.built >= 1 && c.crane) { removeConstruction(c); placeObject(c, false); } }); } grid.forEach(c => { if (c.obj && c.anim < 1) { c.anim = 1; c.obj.scale.y = 1; } }); bakeDirty(99); updateHUD(); },
   get info() { let n = 0; scene.traverse(o => { if (o.isMesh) n++; }); const vis = g => { let k = 0; g.traverseVisible(o => { if (o.isMesh) k++; }); return k; }; return { meshes: n, calls: renderer.info.render.calls, world: vis(world), baked: vis(bakedGroup), agents: vis(agentsGroup), fx: vis(fxGroup), dirty: chunks.filter(c => c.dirty).length, other: scene.children.length }; }, get S() { return S; }, get stats() { return stats; }, get grid() { return grid; }, camera, controls, setSpeed,
 };

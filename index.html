@@ -19,6 +19,7 @@
 
 <header id="hud">
   <div id="era" class="chip"></div>
+  <div id="gov" class="chip"></div>
   <div class="stat" title="年份"><span>📅</span><b id="s-year"></b></div>
   <div class="stat" title="人口"><span>👥</span><b id="s-pop">0</b></div>
   <div class="stat" title="工作"><span>💼</span><b id="s-jobs">0</b></div>
@@ -29,12 +30,23 @@
   <button id="menuBtn" class="iconbtn" title="選擇地圖與時代">🗺️</button>
 </header>
 
+<div id="events"></div>
+
 <aside id="side">
   <div class="pros">
     <div class="pros-top"><span>繁榮度</span><b id="pros-val">0%</b></div>
     <div class="pros-bar"><div id="pros-fill"></div><i title="極致繁榮"></i></div>
     <div id="pros-detail"></div>
   </div>
+  <div class="soc">
+    <div class="srow"><span>⚖️ 穩定</span><div class="sbar"><i id="b-stab"></i></div><b id="v-stab">0</b></div>
+    <div class="srow"><span>🦹 犯罪</span><div class="sbar crime"><i id="b-crime"></i></div><b id="v-crime">0</b></div>
+    <div class="srow"><span>🔬 科技</span><div class="sbar tech"><i id="b-tech"></i></div></div>
+    <div id="v-tech" class="techtxt"></div>
+    <div class="sgrid"><div>🛡️ 軍力<b id="v-army">0</b></div><div>⛓️ 囚犯<b id="v-jail">0</b></div><div>⚔️ 戰績<b id="v-wars"></b></div></div>
+    <div id="mapres" class="resrow"></div>
+  </div>
+  <div class="histbox"><span>👥 人口消長</span><canvas id="hist"></canvas></div>
   <div class="rci">
     <span>需求</span>
     <div class="rcol"><div class="rbar"><div id="d-r" class="fill r"></div></div>住</div>
@@ -51,14 +63,13 @@
 
 <div id="levels" class="hidden">
   <div class="lvwrap">
-    <h1>🏛️ 文明物語 <span>選擇時代與地圖，觀看文明從無到有、發展到極致繁榮</span></h1>
+    <h1>🏛️ 文明物語 <span>選擇起始時代與地圖，觀看文明在戰爭、災害與革命中起起落落，永續演進</span></h1>
     <div id="eraList"></div>
     <div id="eraDesc"></div>
     <div id="levelList"></div>
   </div>
 </div>
 
-<div id="victory" class="hidden"></div>
 
 <script type="module" src="main.js"></script>
 </body>
