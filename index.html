@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>小鎮物語 Tiny Town</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="loading"><div class="logo">🏘️ 小鎮物語</div><div class="bar"><div id="loadbar"></div></div><div id="loadtxt">載入模型中…</div></div>
+
+<header id="hud">
+  <div class="stat" title="資金"><span>💰</span><b id="s-money">0</b><i id="s-delta"></i></div>
+  <div class="stat" title="人口"><span>👥</span><b id="s-pop">0</b></div>
+  <div class="stat" title="就業"><span>💼</span><b id="s-jobs">0</b></div>
+  <div class="stat" title="市民滿意度"><span id="s-hapicon">😊</span><b id="s-hap">0</b></div>
+  <div class="stat" title="電力 使用/供應"><span>⚡</span><b id="s-power">0/0</b></div>
+  <div class="stat" title="日期"><span>📅</span><b id="s-date">第1天</b></div>
+  <div class="speed">
+    <button data-speed="0" title="暫停">⏸</button>
+    <button data-speed="1" class="on" title="一般">▶</button>
+    <button data-speed="3" title="快轉">⏩</button>
+  </div>
+  <div class="tax">稅率 <input id="tax" type="range" min="0" max="20" value="9"><b id="taxv">9%</b></div>
+  <button id="menuBtn" title="選單">☰</button>
+</header>
+
+<aside id="rci">
+  <div class="rci-title">需求</div>
+  <div class="rci-bars">
+    <div class="rcol"><div class="rbar"><div id="d-r" class="fill r"></div></div><span>住</span></div>
+    <div class="rcol"><div class="rbar"><div id="d-c" class="fill c"></div></div><span>商</span></div>
+    <div class="rcol"><div class="rbar"><div id="d-i" class="fill i"></div></div><span>工</span></div>
+  </div>
+  <div id="goal"></div>
+</aside>
+
+<div id="info" class="hidden"></div>
+<div id="toasts"></div>
+<div id="hint">左鍵：建造／拖曳鋪路 · 右鍵拖曳：旋轉 · 滾輪：縮放 · 中鍵或「選取」工具拖曳：平移</div>
+
+<nav id="toolbar"></nav>
+
+<div id="menu" class="hidden">
+  <div class="panel">
+    <h2>🏘️ 小鎮物語</h2>
+    <p>用道路連接住宅、商業與工業區，蓋發電廠供電，設置公園與公共服務提高滿意度。滿意度與需求足夠時，建築會自動升級長高！</p>
+    <ul>
+      <li>🏠 住宅提供人口，人口需要工作（商業／工業）</li>
+      <li>🏭 工業會造成污染，降低附近住宅滿意度</li>
+      <li>🌳 公園、🚓 警察、🚒 消防、🏥 醫院、🏫 學校提升周邊滿意度</li>
+      <li>⚡ 沒電的建築不會運作也不會升級</li>
+    </ul>
+    <div class="btns">
+      <button id="btnResume">繼續遊戲</button>
+      <button id="btnSave">💾 存檔</button>
+      <button id="btnNew" class="danger">重新開始</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
